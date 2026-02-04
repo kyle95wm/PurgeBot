@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env.*
+.pytest_cache/
+
+# OS
+.DS_Store
+
+# Backups
+backups/
+*.zip

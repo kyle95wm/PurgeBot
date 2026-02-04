@@ -1,0 +1,7 @@
+services:
+  role-lister-bot:
+    build: .
+    container_name: role-lister-bot
+    env_file:
+      - .env
+    restart: unless-stopped
