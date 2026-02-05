@@ -1,4 +1,5 @@
 import datetime as dt
+import time
 import discord
 
 from ..config import (
@@ -12,7 +13,7 @@ from ..config import (
     VISITOR_ROLE_ID,
     REDDITOR_ROLE_ID,
 )
-from ..helpers import NO_PINGS, RoleMode  # RoleMode import is harmless; keeps typing consistent if you expand later
+from ..helpers import NO_PINGS
 
 
 def _fmt_uptime(started_at: dt.datetime | None) -> str:
@@ -22,6 +23,7 @@ def _fmt_uptime(started_at: dt.datetime | None) -> str:
     if started_at.tzinfo is None:
         started_at = started_at.replace(tzinfo=dt.timezone.utc)
     delta = now - started_at
+
     total = int(delta.total_seconds())
     days = total // 86400
     hours = (total % 86400) // 3600
@@ -49,14 +51,22 @@ def setup(bot):
         started_at = getattr(bot, "started_at", None)
         version = getattr(bot, "version", "unknown")
 
+        # "Ping" bits:
+        gateway_ms = int(getattr(bot, "latency", 0.0) * 1000)
+        t0 = time.perf_counter()
+
         embed = discord.Embed(title="Bot Info")
 
-        # Basic runtime
         embed.add_field(name="Version", value=str(version), inline=True)
         embed.add_field(name="Uptime", value=_fmt_uptime(started_at), inline=True)
         embed.add_field(name="Entrypoint", value="python -m bot.main", inline=False)
 
-        # Purge defaults
+        embed.add_field(
+            name="Latency",
+            value=f"- Gateway: **{gateway_ms}ms**\n- Interaction: *(measuring...)*",
+            inline=False,
+        )
+
         embed.add_field(
             name="Purge defaults",
             value=(
@@ -68,7 +78,6 @@ def setup(bot):
             inline=False,
         )
 
-        # Role logic (human-readable)
         embed.add_field(
             name="Role logic (target group)",
             value=(
@@ -79,23 +88,20 @@ def setup(bot):
             inline=False,
         )
 
-        # IDs + config sanity
         embed.add_field(
             name="Configured IDs",
             value=(
                 f"- Member role ID: `{VISITOR_ROLE_ID}`\n"
                 f"- Redditor role ID: `{REDDITOR_ROLE_ID}`\n"
                 f"- Ticket channel: <#{TICKET_CHANNEL_ID}>\n"
-                f"- Audit log: "
-                + (f"<#{AUDIT_LOG_CHANNEL_ID}>" if AUDIT_LOG_CHANNEL_ID else "**disabled**")
+                f"- Audit log: " + (f"<#{AUDIT_LOG_CHANNEL_ID}>" if AUDIT_LOG_CHANNEL_ID else "**disabled**")
             ),
             inline=False,
         )
 
-        # Access control
         allowed_preview = "\n".join(f"- `{x}`" for x in sorted(ALLOWED_USER_IDS))
         embed.add_field(
-            name="Staff lock",
+            name="Access control",
             value=(
                 "Staff-only commands:\n"
                 "- `/purge_eligible`\n"
@@ -108,7 +114,6 @@ def setup(bot):
             inline=False,
         )
 
-        # User tools
         embed.add_field(
             name="User tools",
             value=(
@@ -119,4 +124,14 @@ def setup(bot):
             inline=False,
         )
 
+        # Send once, then edit to include interaction RTT.
         await interaction.response.send_message(embed=embed, ephemeral=True, allowed_mentions=NO_PINGS)
+
+        rtt_ms = int((time.perf_counter() - t0) * 1000)
+        embed.set_field_at(
+            3,  # "Latency" field index (0-based): Version/Uptime/Entrypoint/Latency
+            name="Latency",
+            value=f"- Gateway: **{gateway_ms}ms**\n- Interaction: **{rtt_ms}ms**",
+            inline=False,
+        )
+        await interaction.edit_original_response(embed=embed)
