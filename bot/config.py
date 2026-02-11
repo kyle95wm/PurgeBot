@@ -43,6 +43,24 @@ GRACE_PERIOD_SECONDS = 60          # cancel window before kicks start
 CHECKME_COOLDOWN_SECONDS = 10 * 60  # 10 minutes
 
 # --------------------
+# PURGE DM (env-only)
+# --------------------
+# In .env:
+# PURGE_DM_ENABLED=true
+# PURGE_DM_TEMPLATE=Hello {user},\n...\n{server}\n...{days}
+#
+# Supported placeholders:
+#   {user}
+#   {server}
+#   {days}
+#   {role_mode}
+PURGE_DM_ENABLED = os.getenv("PURGE_DM_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+
+PURGE_DM_TEMPLATE = os.getenv("PURGE_DM_TEMPLATE", "").replace("\\n", "\n").strip()
+
+# --------------------
 # CENTRALIZED TEXT / TEMPLATES
 # --------------------
 GIVE_CREDS_HEADER = "Here are your credentials and expiry information:"

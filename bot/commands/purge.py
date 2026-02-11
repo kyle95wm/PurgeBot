@@ -4,7 +4,7 @@ import datetime as dt
 import discord
 from discord import app_commands
 
-from ..config import ALLOWED_USER_IDS
+from ..config import ALLOWED_USER_IDS, DEFAULT_PURGE_DAYS, PURGE_DM_ENABLED, PURGE_DM_TEMPLATE
 from ..helpers import (
     NO_PINGS,
     RoleMode,
@@ -21,7 +21,24 @@ from ..helpers import (
     rel_ts,
 )
 from ..views import SimplePagedView, GraceCancelView
-from ..config import DEFAULT_PURGE_DAYS
+
+
+def _render_purge_dm(*, member: discord.Member, guild: discord.Guild, days: int, role_mode: str) -> str:
+    """
+    Placeholders supported in PURGE_DM_TEMPLATE:
+      {user}      -> str(member)
+      {server}    -> guild.name
+      {days}      -> days threshold used
+      {role_mode} -> role_mode string
+    """
+    return (
+        PURGE_DM_TEMPLATE
+        .replace("{user}", str(member))
+        .replace("{server}", guild.name)
+        .replace("{days}", str(days))
+        .replace("{role_mode}", str(role_mode))
+    )
+
 
 def setup(bot):
     @bot.tree.command(
@@ -260,7 +277,8 @@ def setup(bot):
                 f"Role mode: {role_mode}\n"
                 f"Candidates: {len(to_kick)}\n"
                 f"Grace: {PURGE_GRACE_PERIOD_SECONDS}s\n"
-                f"Starts: {start_at.isoformat()}"
+                f"Starts: {start_at.isoformat()}\n"
+                f"Purge DM: {'enabled' if (PURGE_DM_ENABLED and PURGE_DM_TEMPLATE) else 'disabled'}"
             ),
         )
         await send_audit_embed(guild, armed_audit)
@@ -301,14 +319,24 @@ def setup(bot):
                 f"Days: {days}\n"
                 f"Role mode: {role_mode}\n"
                 f"Candidates: {len(to_kick)}\n"
+                f"Purge DM: {'enabled' if (PURGE_DM_ENABLED and PURGE_DM_TEMPLATE) else 'disabled'}"
             ),
         )
         await send_audit_embed(guild, started_audit)
 
         kicked = 0
         failed: list[str] = []
+        dm_failed: list[str] = []
 
         for m in to_kick:
+            # DM attempt before kick (env-only)
+            if PURGE_DM_ENABLED and PURGE_DM_TEMPLATE:
+                try:
+                    msg = _render_purge_dm(member=m, guild=guild, days=days, role_mode=str(role_mode))
+                    await m.send(msg, allowed_mentions=NO_PINGS)
+                except Exception:
+                    dm_failed.append(f"{m} ({m.id})")
+
             try:
                 await m.kick(reason=f"Purge: role_mode={role_mode} and joined > {days} days ago (by {interaction.user.id})")
                 kicked += 1
@@ -322,12 +350,20 @@ def setup(bot):
             title="Purge complete",
             description=f"Kicked **{kicked}** / **{len(to_kick)}** member(s).",
         )
+
         if failed:
             snippet_lines = [f"• {x}" for x in failed[:10]]
             snippet = "\n".join(snippet_lines) if snippet_lines else "(none)"
             if len(failed) > 10:
                 snippet += f"\n… and {len(failed) - 10} more"
             done_embed.add_field(name="Failed kicks (top 10)", value=snippet[:1024], inline=False)
+
+        if dm_failed:
+            snippet_lines = [f"• {x}" for x in dm_failed[:10]]
+            snippet = "\n".join(snippet_lines) if snippet_lines else "(none)"
+            if len(dm_failed) > 10:
+                snippet += f"\n… and {len(dm_failed) - 10} more"
+            done_embed.add_field(name="DM failures (top 10)", value=snippet[:1024], inline=False)
 
         await interaction.followup.send(embed=done_embed, ephemeral=True, allowed_mentions=NO_PINGS)
 
@@ -339,6 +375,7 @@ def setup(bot):
                 f"Role mode: {role_mode}\n"
                 f"Kicked: {kicked}/{len(to_kick)}\n"
                 f"Failures: {len(failed)}\n"
+                f"DM failures: {len(dm_failed)}\n"
             ),
         )
         await send_audit_embed(guild, finished_audit)
