@@ -41,7 +41,7 @@ def setup(bot):
 
         details = format_creds_message(username=username, password=password, expiry=expiry)
 
-        # 1) Post publicly in the ticket channel + ping user
+        # 1) Post publicly in the ticket channel + ping user (with creds)
         channel_ok = True
         try:
             await channel.send(
@@ -63,7 +63,18 @@ def setup(bot):
             dm_ok = False
             dm_error = f"DM failed: {type(e).__name__}"
 
-        # 3) Ephemeral confirmation to staff (invoker)
+        # 3) If DM succeeded, post a public follow-up confirmation
+        if dm_ok:
+            try:
+                await channel.send(
+                    content=f"{user.mention} I also DM’d you these details for your records.",
+                    allowed_mentions=USER_PINGS_ONLY,
+                )
+            except Exception:
+                # Not critical; ignore if this fails
+                pass
+
+        # 4) Ephemeral confirmation to staff (invoker)
         if channel_ok and dm_ok:
             msg = "Posted in-channel and sent DM."
         elif channel_ok and not dm_ok:
