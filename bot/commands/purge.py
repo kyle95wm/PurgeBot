@@ -326,7 +326,9 @@ def setup(bot):
 
         kicked = 0
         failed: list[str] = []
-        dm_failed: list[str] = []
+
+        dm_sent_count = 0
+        dm_failed_count = 0
 
         for m in to_kick:
             # DM attempt before kick (env-only)
@@ -334,8 +336,9 @@ def setup(bot):
                 try:
                     msg = _render_purge_dm(member=m, guild=guild, days=days, role_mode=str(role_mode))
                     await m.send(msg, allowed_mentions=NO_PINGS)
+                    dm_sent_count += 1
                 except Exception:
-                    dm_failed.append(f"{m} ({m.id})")
+                    dm_failed_count += 1
 
             try:
                 await m.kick(reason=f"Purge: role_mode={role_mode} and joined > {days} days ago (by {interaction.user.id})")
@@ -348,7 +351,10 @@ def setup(bot):
 
         done_embed = discord.Embed(
             title="Purge complete",
-            description=f"Kicked **{kicked}** / **{len(to_kick)}** member(s).",
+            description=(
+                f"Kicked **{kicked}** / **{len(to_kick)}** member(s).\n"
+                f"Purge DMs — sent: **{dm_sent_count}**, failed: **{dm_failed_count}**"
+            ),
         )
 
         if failed:
@@ -357,13 +363,6 @@ def setup(bot):
             if len(failed) > 10:
                 snippet += f"\n… and {len(failed) - 10} more"
             done_embed.add_field(name="Failed kicks (top 10)", value=snippet[:1024], inline=False)
-
-        if dm_failed:
-            snippet_lines = [f"• {x}" for x in dm_failed[:10]]
-            snippet = "\n".join(snippet_lines) if snippet_lines else "(none)"
-            if len(dm_failed) > 10:
-                snippet += f"\n… and {len(dm_failed) - 10} more"
-            done_embed.add_field(name="DM failures (top 10)", value=snippet[:1024], inline=False)
 
         await interaction.followup.send(embed=done_embed, ephemeral=True, allowed_mentions=NO_PINGS)
 
@@ -375,7 +374,7 @@ def setup(bot):
                 f"Role mode: {role_mode}\n"
                 f"Kicked: {kicked}/{len(to_kick)}\n"
                 f"Failures: {len(failed)}\n"
-                f"DM failures: {len(dm_failed)}\n"
+                f"Purge DMs: sent={dm_sent_count}, failed={dm_failed_count}\n"
             ),
         )
         await send_audit_embed(guild, finished_audit)
