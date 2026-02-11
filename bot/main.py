@@ -5,7 +5,7 @@ from discord.ext import commands
 from .config import TOKEN, ALLOWED_USER_IDS
 from .views import CheckStatusPanelView
 
-from .commands import checkme, check, check_panel, list_roles, purge, bot_info, give_creds
+from .commands import checkme, check, check_panel, list_roles, purge, bot_info, give_creds, test_purge_dm
 
 
 intents = discord.Intents.default()
@@ -44,6 +44,7 @@ def load_commands():
     purge.setup(bot)
     bot_info.setup(bot)
     give_creds.setup(bot)
+    test_purge_dm.setup(bot)
 
 
 load_commands()
