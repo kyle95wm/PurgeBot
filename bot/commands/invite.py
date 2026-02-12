@@ -4,6 +4,7 @@ import discord
 from discord import app_commands
 
 from ..helpers import NO_PINGS, send_audit_embed
+from ..invite_tracking import snapshot_invites_to_db
 
 
 DEFAULT_MAX_AGE_SECONDS = 24 * 60 * 60  # 24h
@@ -61,6 +62,12 @@ def setup(bot):
         except discord.HTTPException:
             await interaction.followup.send("Invite creation failed (Discord API error). Try again.", ephemeral=True)
             return
+
+        # IMPORTANT: snapshot right after creating the invite so the baseline knows it exists
+        try:
+            await snapshot_invites_to_db(guild)
+        except Exception:
+            pass
 
         expires_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=DEFAULT_MAX_AGE_SECONDS)
 

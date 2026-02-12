@@ -1,3 +1,4 @@
+import asyncio
 import datetime as dt
 import discord
 
@@ -33,7 +34,7 @@ async def snapshot_invites_to_db(guild: discord.Guild) -> None:
         await db.commit()
 
 
-async def detect_used_invite(guild: discord.Guild) -> dict | None:
+async def _detect_used_invite_once(guild: discord.Guild) -> dict | None:
     invites = await guild.invites()
 
     async with connect() as db:
@@ -41,7 +42,7 @@ async def detect_used_invite(guild: discord.Guild) -> dict | None:
             "SELECT code, uses, inviter_id FROM invite_baseline WHERE guild_id = ?",
             (guild.id,),
         )
-        baseline = {r[0]: (r[1], r[2]) for r in rows}  # (uses, inviter_id)
+        baseline = {r[0]: (r[1], r[2]) for r in rows}  # code -> (uses, inviter_id)
 
         best = None
         for inv in invites:
@@ -91,6 +92,20 @@ async def detect_used_invite(guild: discord.Guild) -> dict | None:
         "before": best["before"],
         "after": best["after"],
     }
+
+
+async def detect_used_invite(guild: discord.Guild) -> dict | None:
+    """
+    Try twice to reduce race issues (especially with max_uses=1 invites).
+    """
+    first = await _detect_used_invite_once(guild)
+    if first is not None:
+        return first
+
+    # Small delay to let Discord bump invite uses
+    await asyncio.sleep(1.0)
+
+    return await _detect_used_invite_once(guild)
 
 
 async def log_join_event(*, guild_id: int, member: discord.Member, invite_info: dict | None) -> None:
