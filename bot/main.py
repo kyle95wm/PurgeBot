@@ -10,7 +10,7 @@ from .db import ensure_db
 from .invite_tracking import snapshot_invites_to_db, detect_used_invite, log_join_event
 
 # Import command modules directly (don’t rely on commands/__init__.py exporting anything)
-from .commands import checkme, check, check_panel, list_roles, purge, bot_info, give_creds, test_purge_dm
+from .commands import checkme, check, check_panel, list_roles, purge, bot_info, give_creds, test_purge_dm, whois
 from .commands import invite as invite_cmd
 
 
@@ -120,6 +120,7 @@ def load_commands():
     give_creds.setup(bot)
     test_purge_dm.setup(bot)
     invite_cmd.setup(bot)
+    whois.setup(bot)
 
 
 load_commands()
