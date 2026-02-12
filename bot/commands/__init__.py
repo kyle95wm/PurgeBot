@@ -1,9 +1,2 @@
-from . import checkme
-from . import check
-from . import check_panel
-from . import list_roles
-from . import purge
-from . import bot_info
-from . import give_creds
-from . import test_purge_dm
-from . import invite
+# Intentionally empty.
+# We don't import submodules here to avoid circular import issues.
