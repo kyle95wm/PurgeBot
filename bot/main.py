@@ -8,8 +8,10 @@ from .helpers import send_audit_embed, NO_PINGS
 from .db import ensure_db
 from .invite_tracking import snapshot_invites_to_db, detect_used_invite, log_join_event
 
-from .commands import checkme, check, check_panel, list_roles, purge, bot_info, give_creds, test_purge_dm
-
+from .commands import (
+    checkme, check, check_panel, list_roles, purge,
+    bot_info, give_creds, test_purge_dm, invite
+)
 
 intents = discord.Intents.default()
 intents.members = True
@@ -59,7 +61,6 @@ async def on_member_join(member: discord.Member):
     try:
         invite_info = await detect_used_invite(guild)
     except discord.Forbidden:
-        # Can't fetch invites
         invite_info = None
     except Exception:
         invite_info = None
@@ -69,7 +70,6 @@ async def on_member_join(member: discord.Member):
     except Exception as e:
         print(f"[invite-tracking] Failed to log join: {type(e).__name__}: {e}")
 
-    # Audit log embed (simple)
     embed = discord.Embed(
         title="Member joined",
         description=f"{member} ({member.id}) joined.",
@@ -94,6 +94,7 @@ def load_commands():
     bot_info.setup(bot)
     give_creds.setup(bot)
     test_purge_dm.setup(bot)
+    invite.setup(bot)
 
 
 load_commands()
