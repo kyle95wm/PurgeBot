@@ -15,9 +15,28 @@ ROLE_WEST_ID = 1466938881764233396  # SS-VOD West
 # Where staff actions land
 MOVE_REQUESTS_CHANNEL_ID = 1468797510897373425
 
+# Cooldown (change to taste)
+MOVE_SERVER_COOLDOWN_SECONDS = 60 * 60  # 1 hour
+
+# In-memory cooldown tracking (resets on bot restart)
+MOVE_LAST_SUBMITTED: dict[int, dt.datetime] = {}
+
 
 def _now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
+
+
+def _seconds_left(user_id: int) -> int:
+    last = MOVE_LAST_SUBMITTED.get(user_id)
+    if not last:
+        return 0
+    elapsed = (_now() - last).total_seconds()
+    remaining = MOVE_SERVER_COOLDOWN_SECONDS - elapsed
+    return int(remaining) if remaining > 0 else 0
+
+
+def _mark_submitted(user_id: int) -> None:
+    MOVE_LAST_SUBMITTED[user_id] = _now()
 
 
 def _get_role_ids(member: discord.Member) -> set[int]:
@@ -101,6 +120,17 @@ def _parse_request_from_embed(embed: discord.Embed) -> dict | None:
     }
 
 
+def _staff_ping_content() -> str:
+    # Ping the allowed IDs from .env
+    if not ALLOWED_USER_IDS:
+        return ""
+    mentions = " ".join(f"<@{uid}>" for uid in sorted(ALLOWED_USER_IDS))
+    return f"New move request: {mentions}"
+
+
+STAFF_PINGS_ALLOWED = discord.AllowedMentions(users=True, roles=False, everyone=False)
+
+
 class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
     email = discord.ui.TextInput(
         label="Email address",
@@ -119,7 +149,6 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
         if guild is None:
-            # modal submits can be replied to normally
             await interaction.response.send_message("Run this in a server, not DMs.", ephemeral=True)
             return
 
@@ -127,8 +156,18 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
             await interaction.response.send_message("Could not resolve your member info.", ephemeral=True)
             return
 
-        # We might do some slower work now, so defer immediately
+        # Defer quickly since we may do slower work
         await interaction.response.defer(ephemeral=True)
+
+        # Cooldown check again at submit time (prevents opening multiple modals)
+        remaining = _seconds_left(interaction.user.id)
+        if remaining > 0:
+            await interaction.followup.send(
+                f"You're on cooldown for this request. Try again in **{remaining // 60}m {remaining % 60}s**.",
+                ephemeral=True,
+                allowed_mentions=NO_PINGS,
+            )
+            return
 
         direction = _role_direction(interaction.user)
         if direction is None:
@@ -165,7 +204,23 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
         embed.add_field(name="Requested", value=rel_ts(now), inline=True)
         embed.set_footer(text=f"Request ID: {rid} | Requester: {interaction.user.id}")
 
-        await staff_ch.send(embed=embed, view=MoveServerActionView(), allowed_mentions=NO_PINGS)
+        # Mark cooldown only after we successfully post the request
+        ping_content = _staff_ping_content()
+        try:
+            await staff_ch.send(
+                content=ping_content or None,
+                embed=embed,
+                view=MoveServerActionView(),
+                allowed_mentions=STAFF_PINGS_ALLOWED if ping_content else NO_PINGS,
+            )
+            _mark_submitted(interaction.user.id)
+        except Exception:
+            await interaction.followup.send(
+                "Something went wrong sending your request to staff. Try again in a moment.",
+                ephemeral=True,
+                allowed_mentions=NO_PINGS,
+            )
+            return
 
         await interaction.followup.send(
             "Got it — your request has been sent to staff for review.",
@@ -379,6 +434,15 @@ def setup(bot):
         description="Request a move between East/West (requires SS-VOD East or SS-VOD West).",
     )
     async def move_server(interaction: discord.Interaction):
-        # IMPORTANT: respond immediately by showing the modal.
-        # Do NOT do slow work here, or Discord will expire the interaction.
+        # Cooldown check must be fast and happen BEFORE opening modal
+        remaining = _seconds_left(interaction.user.id)
+        if remaining > 0:
+            await interaction.response.send_message(
+                f"You're on cooldown for this request. Try again in **{remaining // 60}m {remaining % 60}s**.",
+                ephemeral=True,
+                allowed_mentions=NO_PINGS,
+            )
+            return
+
+        # Respond immediately with modal (prevents "Unknown interaction")
         await interaction.response.send_modal(MoveServerRequestModal())
