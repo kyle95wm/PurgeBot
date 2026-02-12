@@ -76,12 +76,18 @@ async def on_member_join(member: discord.Member):
     # INVITE TRACKING + LOGGING
     # --------------------
     invite_info = None
+    unknown_reason = None
+
     try:
         invite_info = await detect_used_invite(guild)
+        if invite_info is None:
+            # No error, but no delta detected (common with vanity / expired / 1-use race timing)
+            unknown_reason = "unknown (no invite delta detected — vanity/expired/race)"
     except discord.Forbidden:
-        invite_info = None
-    except Exception:
-        invite_info = None
+        # This is the big one: can create invites, but can’t READ invites without Manage Server perms
+        unknown_reason = "unknown (missing permission to read invites — give bot Manage Server)"
+    except Exception as e:
+        unknown_reason = f"unknown (invite check error: {type(e).__name__})"
 
     try:
         await log_join_event(guild_id=guild.id, member=member, invite_info=invite_info)
@@ -92,13 +98,14 @@ async def on_member_join(member: discord.Member):
         title="Member joined",
         description=f"{member} ({member.id}) joined.",
     )
+
     if invite_info:
         inviter = f"<@{invite_info['inviter_id']}>" if invite_info.get("inviter_id") else "unknown"
         embed.add_field(name="Invite", value=f"`{invite_info['code']}`", inline=True)
         embed.add_field(name="Inviter", value=inviter, inline=True)
         embed.add_field(name="Uses", value=f"{invite_info['before']} → {invite_info['after']}", inline=True)
     else:
-        embed.add_field(name="Invite", value="unknown (vanity/expired/race/permissions)", inline=False)
+        embed.add_field(name="Invite", value=unknown_reason or "unknown", inline=False)
 
     await send_audit_embed(guild, embed)
 
