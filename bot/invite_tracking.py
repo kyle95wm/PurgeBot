@@ -9,6 +9,18 @@ def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
+# Keep existing inviter_id if we already have one (prevents overwriting staff creator with "bot")
+UPSERT_BASELINE_SQL = """
+INSERT INTO invite_baseline (guild_id, code, uses, inviter_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(guild_id, code) DO UPDATE SET
+  uses=excluded.uses,
+  inviter_id=COALESCE(invite_baseline.inviter_id, excluded.inviter_id),
+  created_at=COALESCE(invite_baseline.created_at, excluded.created_at),
+  updated_at=excluded.updated_at
+"""
+
+
 async def snapshot_invites_to_db(guild: discord.Guild) -> None:
     invites = await guild.invites()
     now = _now_iso()
@@ -20,15 +32,7 @@ async def snapshot_invites_to_db(guild: discord.Guild) -> None:
             uses = inv.uses or 0
 
             await db.execute(
-                """
-                INSERT INTO invite_baseline (guild_id, code, uses, inviter_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(guild_id, code) DO UPDATE SET
-                  uses=excluded.uses,
-                  inviter_id=excluded.inviter_id,
-                  created_at=excluded.created_at,
-                  updated_at=excluded.updated_at
-                """,
+                UPSERT_BASELINE_SQL,
                 (guild.id, inv.code, uses, inviter_id, created_at, now),
             )
         await db.commit()
@@ -48,21 +52,26 @@ async def _detect_used_invite_once(guild: discord.Guild) -> dict | None:
         for inv in invites:
             code = inv.code
             after = inv.uses or 0
-            before, inviter_id = baseline.get(code, (0, inv.inviter.id if inv.inviter else None))
+
+            before, stored_inviter_id = baseline.get(code, (0, None))
             delta = after - before
             if delta <= 0:
                 continue
 
+            # Prefer stored_inviter_id (staff who ran /invite) over Discord inviter (bot)
+            discord_inviter_id = inv.inviter.id if inv.inviter else None
+            effective_inviter_id = stored_inviter_id if stored_inviter_id is not None else discord_inviter_id
+
             if best is None or delta > best["delta"]:
                 best = {
                     "code": code,
-                    "inviter_id": inviter_id if inviter_id is not None else (inv.inviter.id if inv.inviter else None),
+                    "inviter_id": effective_inviter_id,
                     "before": before,
                     "after": after,
                     "delta": delta,
                 }
 
-        # Update baseline to latest so future joins compare correctly
+        # Refresh baseline (but DO NOT overwrite inviter_id if we already stored staff creator)
         now = _now_iso()
         for inv in invites:
             inviter_id = inv.inviter.id if inv.inviter else None
@@ -70,15 +79,7 @@ async def _detect_used_invite_once(guild: discord.Guild) -> dict | None:
             uses = inv.uses or 0
 
             await db.execute(
-                """
-                INSERT INTO invite_baseline (guild_id, code, uses, inviter_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(guild_id, code) DO UPDATE SET
-                  uses=excluded.uses,
-                  inviter_id=excluded.inviter_id,
-                  created_at=excluded.created_at,
-                  updated_at=excluded.updated_at
-                """,
+                UPSERT_BASELINE_SQL,
                 (guild.id, inv.code, uses, inviter_id, created_at, now),
             )
         await db.commit()
@@ -95,16 +96,11 @@ async def _detect_used_invite_once(guild: discord.Guild) -> dict | None:
 
 
 async def detect_used_invite(guild: discord.Guild) -> dict | None:
-    """
-    Try twice to reduce race issues (especially with max_uses=1 invites).
-    """
     first = await _detect_used_invite_once(guild)
     if first is not None:
         return first
 
-    # Small delay to let Discord bump invite uses
     await asyncio.sleep(1.0)
-
     return await _detect_used_invite_once(guild)
 
 

@@ -5,10 +5,15 @@ from discord import app_commands
 
 from ..helpers import NO_PINGS, send_audit_embed
 from ..invite_tracking import snapshot_invites_to_db
+from ..db import connect
 
 
 DEFAULT_MAX_AGE_SECONDS = 24 * 60 * 60  # 24h
-DEFAULT_MAX_USES = 0  # 0 = unlimited uses
+DEFAULT_MAX_USES = 0  # unlimited
+
+
+def _now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
 def setup(bot):
@@ -32,7 +37,6 @@ def setup(bot):
             await interaction.response.send_message("Can't resolve bot member in this guild.", ephemeral=True)
             return
 
-        # Permission checks
         if not channel.permissions_for(me).create_instant_invite:
             await interaction.response.send_message(
                 "I don’t have permission to create invites in this channel.",
@@ -63,9 +67,32 @@ def setup(bot):
             await interaction.followup.send("Invite creation failed (Discord API error). Try again.", ephemeral=True)
             return
 
-        # Snapshot right after creating the invite so the baseline knows it exists
+        # Snapshot so baseline knows about the invite
         try:
             await snapshot_invites_to_db(guild)
+        except Exception:
+            pass
+
+        # Override baseline inviter_id to the staff member who ran /invite
+        try:
+            now = _now_iso()
+            created_at = inv.created_at.isoformat() if inv.created_at else None
+            uses = inv.uses or 0
+
+            async with connect() as db:
+                await db.execute(
+                    """
+                    INSERT INTO invite_baseline (guild_id, code, uses, inviter_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(guild_id, code) DO UPDATE SET
+                      uses=excluded.uses,
+                      inviter_id=excluded.inviter_id,
+                      created_at=COALESCE(invite_baseline.created_at, excluded.created_at),
+                      updated_at=excluded.updated_at
+                    """,
+                    (guild.id, inv.code, uses, interaction.user.id, created_at, now),
+                )
+                await db.commit()
         except Exception:
             pass
 
@@ -77,7 +104,6 @@ def setup(bot):
             allowed_mentions=NO_PINGS,
         )
 
-        # Audit log
         embed = discord.Embed(
             title="Invite created",
             description=(
