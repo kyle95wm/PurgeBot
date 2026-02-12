@@ -2,9 +2,8 @@ import datetime as dt
 import secrets
 
 import discord
-from discord import app_commands
 
-from ..config import ALLOWED_USER_IDS
+from ..config import ALLOWED_USER_IDS, TICKET_CHANNEL_ID
 from ..helpers import NO_PINGS, rel_ts, send_audit_embed
 
 
@@ -82,6 +81,29 @@ def _find_field(embed: discord.Embed, name: str) -> str | None:
     return None
 
 
+def _parse_origin_channel_id(embed: discord.Embed) -> int | None:
+    """
+    Field value is stored like: "<#123> (123)"
+    We'll try to extract the numeric ID.
+    """
+    v = _find_field(embed, "Origin channel")
+    if not v:
+        return None
+    # common pattern: "...(123)"
+    if "(" in v and ")" in v:
+        try:
+            inside = v.split("(", 1)[1].split(")", 1)[0].strip()
+            return int(inside)
+        except Exception:
+            pass
+    # fallback: raw digits anywhere
+    digits = "".join(ch for ch in v if ch.isdigit())
+    try:
+        return int(digits) if digits else None
+    except Exception:
+        return None
+
+
 def _parse_request_from_embed(embed: discord.Embed) -> dict | None:
     """
     Pull request data from the embed we posted to staff.
@@ -102,21 +124,15 @@ def _parse_request_from_embed(embed: discord.Embed) -> dict | None:
         except Exception:
             pass
 
-    email = _find_field(embed, "Email")
-    reason = _find_field(embed, "Reason")
     from_to = _find_field(embed, "Move")
-    requested_at = _find_field(embed, "Requested")
-
     if not requester_id or not from_to:
         return None
 
     return {
         "request_id": rid or "UNKNOWN",
         "requester_id": requester_id,
-        "email": email or "(unknown)",
-        "reason": reason or "(none)",
         "move": from_to,
-        "requested_at": requested_at or "(unknown)",
+        "origin_channel_id": _parse_origin_channel_id(embed),
     }
 
 
@@ -129,6 +145,40 @@ def _staff_ping_content() -> str:
 
 
 STAFF_PINGS_ALLOWED = discord.AllowedMentions(users=True, roles=False, everyone=False)
+USER_PING_ALLOWED = discord.AllowedMentions(users=True, roles=False, everyone=False)
+
+
+async def _notify_origin_channel_if_needed(
+    *,
+    guild: discord.Guild,
+    origin_channel_id: int | None,
+    requester_id: int,
+    text: str,
+) -> bool:
+    """
+    Best-effort. Returns True if sent, False otherwise.
+    """
+    if not origin_channel_id:
+        return False
+
+    ch = guild.get_channel(origin_channel_id)
+    if ch is None:
+        try:
+            ch = await guild.fetch_channel(origin_channel_id)
+        except Exception:
+            return False
+
+    if not isinstance(ch, (discord.TextChannel, discord.Thread)):
+        return False
+
+    try:
+        await ch.send(
+            content=f"<@{requester_id}> {text}",
+            allowed_mentions=USER_PING_ALLOWED,
+        )
+        return True
+    except Exception:
+        return False
 
 
 class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
@@ -156,7 +206,6 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
             await interaction.response.send_message("Could not resolve your member info.", ephemeral=True)
             return
 
-        # Defer quickly since we may do slower work
         await interaction.response.defer(ephemeral=True)
 
         # Cooldown check again at submit time (prevents opening multiple modals)
@@ -194,6 +243,10 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
         rid = _new_request_id()
         now = _now()
 
+        # Where was /move_server run?
+        origin_channel = interaction.channel
+        origin_channel_id = origin_channel.id if origin_channel else None
+
         embed = discord.Embed(
             title="Move server request",
             description=f"Requester: {interaction.user.mention} ({interaction.user})",
@@ -201,10 +254,11 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
         embed.add_field(name="Move", value=f"{from_name} → {to_name}", inline=False)
         embed.add_field(name="Email", value=str(self.email.value).strip(), inline=False)
         embed.add_field(name="Reason", value=str(self.reason.value).strip(), inline=False)
+        if origin_channel_id:
+            embed.add_field(name="Origin channel", value=f"<#{origin_channel_id}> ({origin_channel_id})", inline=False)
         embed.add_field(name="Requested", value=rel_ts(now), inline=True)
         embed.set_footer(text=f"Request ID: {rid} | Requester: {interaction.user.id}")
 
-        # Mark cooldown only after we successfully post the request
         ping_content = _staff_ping_content()
         try:
             await staff_ch.send(
@@ -254,6 +308,8 @@ class AcceptMoveModal(discord.ui.Modal, title="Accept move request"):
         await interaction.response.defer(ephemeral=True)
 
         requester_id = self.request["requester_id"]
+        origin_channel_id = self.request.get("origin_channel_id")
+
         requester = guild.get_member(requester_id)
         if requester is None:
             try:
@@ -278,12 +334,27 @@ class AcceptMoveModal(discord.ui.Modal, title="Accept move request"):
         else:
             dm_error = "MemberNotFound"
 
+        # If DM failed, ping them in the channel they started in (no Plex URL)
+        origin_pinged = False
+        if not dm_ok:
+            origin_pinged = await _notify_origin_channel_if_needed(
+                guild=guild,
+                origin_channel_id=origin_channel_id,
+                requester_id=requester_id,
+                text=(
+                    "your move request was **approved**, but I couldn’t DM you the details. "
+                    f"Please open a support ticket in <#{TICKET_CHANNEL_ID}> so staff can follow up."
+                ),
+            )
+
         embed = interaction.message.embeds[0].copy() if interaction.message.embeds else discord.Embed(title="Move server request")
         embed.add_field(name="Status", value="✅ Accepted", inline=True)
         embed.add_field(name="Handled by", value=f"{interaction.user} ({interaction.user.id})", inline=False)
         embed.add_field(name="DM sent", value=str(dm_ok), inline=True)
         if not dm_ok and dm_error:
             embed.add_field(name="DM error", value=dm_error, inline=True)
+        if not dm_ok:
+            embed.add_field(name="Origin ping sent", value=str(origin_pinged), inline=True)
 
         await interaction.message.edit(embed=embed, view=MoveServerActionView(disabled=True), allowed_mentions=NO_PINGS)
         await interaction.followup.send("Accepted.", ephemeral=True, allowed_mentions=NO_PINGS)
@@ -295,7 +366,8 @@ class AcceptMoveModal(discord.ui.Modal, title="Accept move request"):
                 f"Requester: <@{requester_id}> ({requester_id})\n"
                 f"Move: {self.request.get('move')}\n"
                 f"Handled by: {interaction.user} ({interaction.user.id})\n"
-                f"DM sent: {dm_ok}"
+                f"DM sent: {dm_ok}\n"
+                f"Origin ping sent: {origin_pinged if not dm_ok else 'n/a'}"
             ),
         )
         await send_audit_embed(guild, audit)
@@ -303,7 +375,7 @@ class AcceptMoveModal(discord.ui.Modal, title="Accept move request"):
 
 class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
     deny_reason = discord.ui.TextInput(
-        label="Reason for denial",
+        label="Reason for denial (staff only)",
         placeholder="Explain why this request was denied.",
         required=True,
         style=discord.TextStyle.paragraph,
@@ -327,6 +399,8 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
         await interaction.response.defer(ephemeral=True)
 
         requester_id = self.request["requester_id"]
+        origin_channel_id = self.request.get("origin_channel_id")
+
         requester = guild.get_member(requester_id)
         if requester is None:
             try:
@@ -338,8 +412,7 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
         dm_error = None
         dm_text = (
             "Your move request has been **denied**.\n\n"
-            f"Reason:\n{self.deny_reason.value.strip()}\n\n"
-            "If you think this is a mistake, reply in your ticket / support chat."
+            "If you’d like to discuss it further, please reply in your ticket / support chat."
         )
 
         if requester:
@@ -351,13 +424,28 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
         else:
             dm_error = "MemberNotFound"
 
+        # If DM failed, ping them in origin channel (NO denial reason)
+        origin_pinged = False
+        if not dm_ok:
+            origin_pinged = await _notify_origin_channel_if_needed(
+                guild=guild,
+                origin_channel_id=origin_channel_id,
+                requester_id=requester_id,
+                text=(
+                    "your move request was **denied**, but I couldn’t DM you. "
+                    f"If you want to discuss further, please open a support ticket in <#{TICKET_CHANNEL_ID}>."
+                ),
+            )
+
         embed = interaction.message.embeds[0].copy() if interaction.message.embeds else discord.Embed(title="Move server request")
         embed.add_field(name="Status", value="❌ Denied", inline=True)
         embed.add_field(name="Handled by", value=f"{interaction.user} ({interaction.user.id})", inline=False)
-        embed.add_field(name="Denial reason", value=self.deny_reason.value.strip()[:1024], inline=False)
+        embed.add_field(name="Denial reason (staff)", value=self.deny_reason.value.strip()[:1024], inline=False)
         embed.add_field(name="DM sent", value=str(dm_ok), inline=True)
         if not dm_ok and dm_error:
             embed.add_field(name="DM error", value=dm_error, inline=True)
+        if not dm_ok:
+            embed.add_field(name="Origin ping sent", value=str(origin_pinged), inline=True)
 
         await interaction.message.edit(embed=embed, view=MoveServerActionView(disabled=True), allowed_mentions=NO_PINGS)
         await interaction.followup.send("Denied.", ephemeral=True, allowed_mentions=NO_PINGS)
@@ -369,7 +457,8 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
                 f"Requester: <@{requester_id}> ({requester_id})\n"
                 f"Move: {self.request.get('move')}\n"
                 f"Handled by: {interaction.user} ({interaction.user.id})\n"
-                f"DM sent: {dm_ok}"
+                f"DM sent: {dm_ok}\n"
+                f"Origin ping sent: {origin_pinged if not dm_ok else 'n/a'}"
             ),
         )
         await send_audit_embed(guild, audit)
@@ -434,7 +523,6 @@ def setup(bot):
         description="Request a move between East/West (requires SS-VOD East or SS-VOD West).",
     )
     async def move_server(interaction: discord.Interaction):
-        # Cooldown check must be fast and happen BEFORE opening modal
         remaining = _seconds_left(interaction.user.id)
         if remaining > 0:
             await interaction.response.send_message(
@@ -444,5 +532,4 @@ def setup(bot):
             )
             return
 
-        # Respond immediately with modal (prevents "Unknown interaction")
         await interaction.response.send_modal(MoveServerRequestModal())
