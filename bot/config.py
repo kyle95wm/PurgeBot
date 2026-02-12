@@ -12,6 +12,12 @@ if not XC_URL:
     raise RuntimeError("Missing XC_URL env var (set it in .env).")
 
 # --------------------
+# SQLITE
+# --------------------
+# Persisted DB path (recommended to keep under /app/data with a docker volume)
+SQLITE_PATH = os.getenv("SQLITE_PATH", "/app/data/bot.sqlite3")
+
+# --------------------
 # OPTIONAL / CONFIG
 # --------------------
 AUDIT_LOG_CHANNEL_ID = int(os.getenv("AUDIT_LOG_CHANNEL_ID", "0")) or None
