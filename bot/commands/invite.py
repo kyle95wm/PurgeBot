@@ -8,13 +8,13 @@ from ..invite_tracking import snapshot_invites_to_db
 
 
 DEFAULT_MAX_AGE_SECONDS = 24 * 60 * 60  # 24h
-DEFAULT_MAX_USES = 1
+DEFAULT_MAX_USES = 0  # 0 = unlimited uses
 
 
 def setup(bot):
     @bot.tree.command(
         name="invite",
-        description="Create an invite link for this channel (24h, 1 use).",
+        description="Create an invite link for this channel (24h, unlimited uses).",
     )
     async def invite(interaction: discord.Interaction):
         guild = interaction.guild
@@ -63,7 +63,7 @@ def setup(bot):
             await interaction.followup.send("Invite creation failed (Discord API error). Try again.", ephemeral=True)
             return
 
-        # IMPORTANT: snapshot right after creating the invite so the baseline knows it exists
+        # Snapshot right after creating the invite so the baseline knows it exists
         try:
             await snapshot_invites_to_db(guild)
         except Exception:
@@ -72,7 +72,7 @@ def setup(bot):
         expires_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=DEFAULT_MAX_AGE_SECONDS)
 
         await interaction.followup.send(
-            f"Here’s your invite link (expires <t:{int(expires_at.timestamp())}:R>, max uses: {DEFAULT_MAX_USES}):\n{inv.url}",
+            f"Here’s your invite link (expires <t:{int(expires_at.timestamp())}:R>, unlimited uses):\n{inv.url}",
             ephemeral=True,
             allowed_mentions=NO_PINGS,
         )
@@ -85,7 +85,7 @@ def setup(bot):
                 f"Channel: {channel.mention} ({channel.id})\n"
                 f"Code: `{inv.code}`\n"
                 f"Max age: {DEFAULT_MAX_AGE_SECONDS}s\n"
-                f"Max uses: {DEFAULT_MAX_USES}\n"
+                f"Max uses: unlimited\n"
                 f"Expires: <t:{int(expires_at.timestamp())}:R>"
             ),
         )
