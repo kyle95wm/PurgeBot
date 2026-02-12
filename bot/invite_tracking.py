@@ -9,14 +9,10 @@ def _now_iso() -> str:
 
 
 async def snapshot_invites_to_db(guild: discord.Guild) -> None:
-    """
-    Store current invite uses as baseline (upsert).
-    Should be called on_ready (and can be called periodically later if desired).
-    """
     invites = await guild.invites()
     now = _now_iso()
 
-    async with await connect() as db:
+    async with connect() as db:
         for inv in invites:
             inviter_id = inv.inviter.id if inv.inviter else None
             created_at = inv.created_at.isoformat() if inv.created_at else None
@@ -38,24 +34,16 @@ async def snapshot_invites_to_db(guild: discord.Guild) -> None:
 
 
 async def detect_used_invite(guild: discord.Guild) -> dict | None:
-    """
-    Compares live invite uses vs baseline in DB.
-    Returns info dict like:
-      {code, inviter_id, before, after}
-    or None if not determinable.
-    """
     invites = await guild.invites()
 
-    async with await connect() as db:
-        # read baseline
+    async with connect() as db:
         rows = await db.execute_fetchall(
             "SELECT code, uses, inviter_id FROM invite_baseline WHERE guild_id = ?",
             (guild.id,),
         )
-        baseline = {r["code"]: (r["uses"], r["inviter_id"]) for r in rows}
+        baseline = {r[0]: (r[1], r[2]) for r in rows}  # (uses, inviter_id)
 
         best = None
-        # Find invite where uses increased the most
         for inv in invites:
             code = inv.code
             after = inv.uses or 0
@@ -63,6 +51,7 @@ async def detect_used_invite(guild: discord.Guild) -> dict | None:
             delta = after - before
             if delta <= 0:
                 continue
+
             if best is None or delta > best["delta"]:
                 best = {
                     "code": code,
@@ -72,12 +61,13 @@ async def detect_used_invite(guild: discord.Guild) -> dict | None:
                     "delta": delta,
                 }
 
-        # Update baseline to latest (so we don't repeatedly "detect" same use)
+        # Update baseline to latest so future joins compare correctly
         now = _now_iso()
         for inv in invites:
             inviter_id = inv.inviter.id if inv.inviter else None
             created_at = inv.created_at.isoformat() if inv.created_at else None
             uses = inv.uses or 0
+
             await db.execute(
                 """
                 INSERT INTO invite_baseline (guild_id, code, uses, inviter_id, created_at, updated_at)
@@ -103,13 +93,8 @@ async def detect_used_invite(guild: discord.Guild) -> dict | None:
     }
 
 
-async def log_join_event(
-    *,
-    guild_id: int,
-    member: discord.Member,
-    invite_info: dict | None,
-) -> None:
-    async with await connect() as db:
+async def log_join_event(*, guild_id: int, member: discord.Member, invite_info: dict | None) -> None:
+    async with connect() as db:
         await db.execute(
             """
             INSERT INTO invite_join_log (

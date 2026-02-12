@@ -3,7 +3,6 @@ import aiosqlite
 
 from .config import SQLITE_PATH
 
-
 CREATE_SQL = """
 PRAGMA journal_mode=WAL;
 
@@ -33,17 +32,17 @@ CREATE INDEX IF NOT EXISTS idx_invite_join_log_guild_time
   ON invite_join_log (guild_id, joined_at);
 """
 
+def connect():
+    """
+    Return an aiosqlite connection context manager.
+    Usage: async with connect() as db:
+    """
+    return aiosqlite.connect(SQLITE_PATH)
+
 
 async def ensure_db() -> None:
-    # Ensure directory exists
     os.makedirs(os.path.dirname(SQLITE_PATH), exist_ok=True)
 
-    async with aiosqlite.connect(SQLITE_PATH) as db:
+    async with connect() as db:
         await db.executescript(CREATE_SQL)
         await db.commit()
-
-
-async def connect():
-    db = await aiosqlite.connect(SQLITE_PATH)
-    db.row_factory = aiosqlite.Row
-    return db
