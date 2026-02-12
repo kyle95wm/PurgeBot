@@ -1,17 +1,18 @@
 import datetime as dt
+
 import discord
 from discord.ext import commands
 
-from .config import TOKEN, ALLOWED_USER_IDS
+from .config import TOKEN, ALLOWED_USER_IDS, VISITOR_ROLE_ID
 from .views import CheckStatusPanelView
-from .helpers import send_audit_embed, NO_PINGS
+from .helpers import send_audit_embed
 from .db import ensure_db
 from .invite_tracking import snapshot_invites_to_db, detect_used_invite, log_join_event
 
-from .commands import (
-    checkme, check, check_panel, list_roles, purge,
-    bot_info, give_creds, test_purge_dm, invite
-)
+# Import command modules directly (don’t rely on commands/__init__.py exporting anything)
+from .commands import checkme, check, check_panel, list_roles, purge, bot_info, give_creds, test_purge_dm
+from .commands import invite as invite_cmd
+
 
 intents = discord.Intents.default()
 intents.members = True
@@ -57,6 +58,23 @@ async def on_ready():
 async def on_member_join(member: discord.Member):
     guild = member.guild
 
+    # --------------------
+    # AUTO-ASSIGN MEMBER ROLE ON JOIN
+    # --------------------
+    try:
+        role = guild.get_role(VISITOR_ROLE_ID)
+        if role is None:
+            print(f"[auto-role] Role {VISITOR_ROLE_ID} not found in guild {guild.id}")
+        else:
+            await member.add_roles(role, reason="Auto-assign Member role on join")
+    except discord.Forbidden:
+        print(f"[auto-role] Missing permissions / role hierarchy to assign {VISITOR_ROLE_ID} in guild {guild.id}")
+    except Exception as e:
+        print(f"[auto-role] Failed to assign role: {type(e).__name__}: {e}")
+
+    # --------------------
+    # INVITE TRACKING + LOGGING
+    # --------------------
     invite_info = None
     try:
         invite_info = await detect_used_invite(guild)
@@ -94,7 +112,7 @@ def load_commands():
     bot_info.setup(bot)
     give_creds.setup(bot)
     test_purge_dm.setup(bot)
-    invite.setup(bot)
+    invite_cmd.setup(bot)
 
 
 load_commands()
