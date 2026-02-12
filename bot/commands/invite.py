@@ -8,32 +8,33 @@ from ..invite_tracking import snapshot_invites_to_db
 from ..db import connect
 
 
-DEFAULT_MAX_AGE_SECONDS = 24 * 60 * 60  # 24h
-DEFAULT_MAX_USES = 0  # unlimited
+# Always create invites to this "landing" channel
+INVITE_TARGET_CHANNEL_ID = 1457896130653458542
 
-INVITE_COOLDOWN_SECONDS = 5 * 60  # 5 minutes
-_LAST_INVITE_AT: dict[int, dt.datetime] = {}  # user_id -> when
+DEFAULT_MAX_AGE_SECONDS = 24 * 60 * 60  # 24h
+DEFAULT_MAX_USES = 0  # 0 = unlimited uses
 
 
 def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
-def _cooldown_remaining(user_id: int) -> int:
-    now = dt.datetime.now(dt.timezone.utc)
-    last = _LAST_INVITE_AT.get(user_id)
-    if not last:
-        return 0
-    elapsed = (now - last).total_seconds()
-    if elapsed >= INVITE_COOLDOWN_SECONDS:
-        return 0
-    return int(INVITE_COOLDOWN_SECONDS - elapsed)
+async def _get_target_channel(guild: discord.Guild) -> discord.abc.GuildChannel | None:
+    ch = guild.get_channel(INVITE_TARGET_CHANNEL_ID)
+    if ch is None:
+        try:
+            ch = await guild.fetch_channel(INVITE_TARGET_CHANNEL_ID)
+        except Exception:
+            return None
+    if isinstance(ch, discord.abc.GuildChannel):
+        return ch
+    return None
 
 
 def setup(bot):
     @bot.tree.command(
         name="invite",
-        description="Create an invite link for this channel (24h, unlimited uses).",
+        description="Create a 24h invite (unlimited uses) to the public landing channel.",
     )
     async def invite(interaction: discord.Interaction):
         guild = interaction.guild
@@ -41,29 +42,23 @@ def setup(bot):
             await interaction.response.send_message("Run this in a server, not DMs.", ephemeral=True)
             return
 
-        # Cooldown (per user)
-        remaining = _cooldown_remaining(interaction.user.id)
-        if remaining > 0:
-            await interaction.response.send_message(
-                f"Slow down — you can create another invite in **{remaining}** seconds.",
-                ephemeral=True,
-            )
-            return
-
-        channel = interaction.channel
-        if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.ForumChannel)):
-            await interaction.response.send_message("I can’t create an invite for this channel type.", ephemeral=True)
-            return
-
         me = guild.me
         if me is None:
             await interaction.response.send_message("Can't resolve bot member in this guild.", ephemeral=True)
             return
 
-        # Only require BOT permission (users might not have it by design)
-        if not channel.permissions_for(me).create_instant_invite:
+        target = await _get_target_channel(guild)
+        if target is None:
             await interaction.response.send_message(
-                "I don’t have permission to create invites in this channel.",
+                f"I can't find the invite target channel `{INVITE_TARGET_CHANNEL_ID}` in this server.",
+                ephemeral=True,
+            )
+            return
+
+        # We only need BOT permission (users might not have invite perms by design)
+        if not target.permissions_for(me).create_instant_invite:
+            await interaction.response.send_message(
+                f"I don’t have permission to create invites in <#{INVITE_TARGET_CHANNEL_ID}>.",
                 ephemeral=True,
             )
             return
@@ -71,7 +66,7 @@ def setup(bot):
         await interaction.response.defer(ephemeral=True)
 
         try:
-            inv = await channel.create_invite(
+            inv = await target.create_invite(
                 max_age=DEFAULT_MAX_AGE_SECONDS,
                 max_uses=DEFAULT_MAX_USES,
                 unique=True,
@@ -83,8 +78,6 @@ def setup(bot):
         except discord.HTTPException:
             await interaction.followup.send("Invite creation failed (Discord API error). Try again.", ephemeral=True)
             return
-
-        _LAST_INVITE_AT[interaction.user.id] = dt.datetime.now(dt.timezone.utc)
 
         # Snapshot so baseline knows about the invite
         try:
@@ -118,16 +111,17 @@ def setup(bot):
         expires_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=DEFAULT_MAX_AGE_SECONDS)
 
         await interaction.followup.send(
-            f"Here’s your invite link (expires <t:{int(expires_at.timestamp())}:R>, unlimited uses):\n{inv.url}",
+            f"Here’s your invite link (goes to <#{INVITE_TARGET_CHANNEL_ID}>, expires <t:{int(expires_at.timestamp())}:R>):\n{inv.url}",
             ephemeral=True,
             allowed_mentions=NO_PINGS,
         )
 
+        # Audit log
         embed = discord.Embed(
             title="Invite created",
             description=(
                 f"Creator: {interaction.user} ({interaction.user.id})\n"
-                f"Channel: {channel.mention} ({channel.id})\n"
+                f"Target channel: <#{INVITE_TARGET_CHANNEL_ID}> ({INVITE_TARGET_CHANNEL_ID})\n"
                 f"Code: `{inv.code}`\n"
                 f"Max age: {DEFAULT_MAX_AGE_SECONDS}s\n"
                 f"Max uses: unlimited\n"
