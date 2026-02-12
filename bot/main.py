@@ -9,9 +9,10 @@ from .helpers import send_audit_embed
 from .db import ensure_db
 from .invite_tracking import snapshot_invites_to_db, detect_used_invite, log_join_event
 
-# Import command modules directly (don’t rely on commands/__init__.py exporting anything)
+# commands
 from .commands import checkme, check, check_panel, list_roles, purge, bot_info, give_creds, test_purge_dm, whois
 from .commands import invite as invite_cmd
+from .commands import move_server
 
 
 intents = discord.Intents.default()
@@ -19,26 +20,24 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Bump this whenever you want a visible version change in /bot_info
 bot.version = "modular-v1"
 
 
 @bot.event
 async def on_ready():
-    # uptime tracking
     if not hasattr(bot, "started_at") or bot.started_at is None:
         bot.started_at = dt.datetime.now(dt.timezone.utc)
 
     print(f"Logged in as {bot.user} ({bot.user.id})")
     print(f"Allowed user IDs: {sorted(ALLOWED_USER_IDS)}")
 
-    # Persistent panel handler (survives restarts)
     bot.add_view(CheckStatusPanelView())
 
-    # DB init
+    # Persistent view for move_server staff buttons
+    bot.add_view(move_server.MoveServerActionView())
+
     await ensure_db()
 
-    # Snapshot invites for every guild we're in
     for g in bot.guilds:
         try:
             await snapshot_invites_to_db(g)
@@ -58,9 +57,7 @@ async def on_ready():
 async def on_member_join(member: discord.Member):
     guild = member.guild
 
-    # --------------------
-    # AUTO-ASSIGN MEMBER ROLE ON JOIN
-    # --------------------
+    # Auto-assign Member role
     try:
         role = guild.get_role(VISITOR_ROLE_ID)
         if role is None:
@@ -72,19 +69,15 @@ async def on_member_join(member: discord.Member):
     except Exception as e:
         print(f"[auto-role] Failed to assign role: {type(e).__name__}: {e}")
 
-    # --------------------
-    # INVITE TRACKING + LOGGING
-    # --------------------
+    # Invite tracking + logging
     invite_info = None
     unknown_reason = None
 
     try:
         invite_info = await detect_used_invite(guild)
         if invite_info is None:
-            # No error, but no delta detected (common with vanity / expired / 1-use race timing)
             unknown_reason = "unknown (no invite delta detected — vanity/expired/race)"
     except discord.Forbidden:
-        # This is the big one: can create invites, but can’t READ invites without Manage Server perms
         unknown_reason = "unknown (missing permission to read invites — give bot Manage Server)"
     except Exception as e:
         unknown_reason = f"unknown (invite check error: {type(e).__name__})"
@@ -98,7 +91,6 @@ async def on_member_join(member: discord.Member):
         title="Member joined",
         description=f"{member} ({member.id}) joined.",
     )
-
     if invite_info:
         inviter = f"<@{invite_info['inviter_id']}>" if invite_info.get("inviter_id") else "unknown"
         embed.add_field(name="Invite", value=f"`{invite_info['code']}`", inline=True)
@@ -121,6 +113,9 @@ def load_commands():
     test_purge_dm.setup(bot)
     invite_cmd.setup(bot)
     whois.setup(bot)
+
+    # new
+    move_server.setup(bot)
 
 
 load_commands()
