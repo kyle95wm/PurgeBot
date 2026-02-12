@@ -11,9 +11,23 @@ from ..db import connect
 DEFAULT_MAX_AGE_SECONDS = 24 * 60 * 60  # 24h
 DEFAULT_MAX_USES = 0  # unlimited
 
+INVITE_COOLDOWN_SECONDS = 5 * 60  # 5 minutes
+_LAST_INVITE_AT: dict[int, dt.datetime] = {}  # user_id -> when
+
 
 def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def _cooldown_remaining(user_id: int) -> int:
+    now = dt.datetime.now(dt.timezone.utc)
+    last = _LAST_INVITE_AT.get(user_id)
+    if not last:
+        return 0
+    elapsed = (now - last).total_seconds()
+    if elapsed >= INVITE_COOLDOWN_SECONDS:
+        return 0
+    return int(INVITE_COOLDOWN_SECONDS - elapsed)
 
 
 def setup(bot):
@@ -27,6 +41,15 @@ def setup(bot):
             await interaction.response.send_message("Run this in a server, not DMs.", ephemeral=True)
             return
 
+        # Cooldown (per user)
+        remaining = _cooldown_remaining(interaction.user.id)
+        if remaining > 0:
+            await interaction.response.send_message(
+                f"Slow down — you can create another invite in **{remaining}** seconds.",
+                ephemeral=True,
+            )
+            return
+
         channel = interaction.channel
         if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.ForumChannel)):
             await interaction.response.send_message("I can’t create an invite for this channel type.", ephemeral=True)
@@ -37,16 +60,10 @@ def setup(bot):
             await interaction.response.send_message("Can't resolve bot member in this guild.", ephemeral=True)
             return
 
+        # Only require BOT permission (users might not have it by design)
         if not channel.permissions_for(me).create_instant_invite:
             await interaction.response.send_message(
                 "I don’t have permission to create invites in this channel.",
-                ephemeral=True,
-            )
-            return
-
-        if not channel.permissions_for(interaction.user).create_instant_invite:
-            await interaction.response.send_message(
-                "You don’t have permission to create invites in this channel.",
                 ephemeral=True,
             )
             return
@@ -67,13 +84,15 @@ def setup(bot):
             await interaction.followup.send("Invite creation failed (Discord API error). Try again.", ephemeral=True)
             return
 
+        _LAST_INVITE_AT[interaction.user.id] = dt.datetime.now(dt.timezone.utc)
+
         # Snapshot so baseline knows about the invite
         try:
             await snapshot_invites_to_db(guild)
         except Exception:
             pass
 
-        # Override baseline inviter_id to the staff member who ran /invite
+        # Store “creator” as the user who ran /invite (not the bot)
         try:
             now = _now_iso()
             created_at = inv.created_at.isoformat() if inv.created_at else None
