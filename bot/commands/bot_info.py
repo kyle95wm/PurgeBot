@@ -12,6 +12,9 @@ from ..config import (
     GRACE_PERIOD_SECONDS,
     VISITOR_ROLE_ID,
     REDDITOR_ROLE_ID,
+    XC_URL,
+    PURGE_DM_ENABLED,
+    PURGE_DM_TEMPLATE,
 )
 from ..helpers import NO_PINGS
 
@@ -68,18 +71,34 @@ def setup(bot):
         )
 
         embed.add_field(
+            name="Highlights",
+            value=(
+                "- Purge system w/ preview + confirm code + grace cancel\n"
+                "- Self-check: `/checkme` + persistent `/check_panel`\n"
+                "- Invite tool: `/invite` (creates a 24h invite)\n"
+                "- Credentials helper: `/give_creds` (posts + DMs)\n"
+                "- Move requests: `/move_server` (modal + staff approve/deny)\n"
+                "- Join auto-role: assigns **Member** on join\n"
+                "- Invite tracking logs joins to sqlite (best-effort)"
+            ),
+            inline=False,
+        )
+
+        purge_dm_status = "enabled" if (PURGE_DM_ENABLED and PURGE_DM_TEMPLATE) else "disabled"
+        embed.add_field(
             name="Purge defaults",
             value=(
                 f"- Days: **{DEFAULT_PURGE_DAYS}**\n"
                 f"- Grace: **{GRACE_PERIOD_SECONDS}s**\n"
                 f"- Confirm TTL: **{CONFIRM_CODE_TTL_SECONDS//60} min**\n"
-                f"- Kick delay: **{KICK_DELAY_SECONDS:.1f}s**"
+                f"- Kick delay: **{KICK_DELAY_SECONDS:.1f}s**\n"
+                f"- Purge DM: **{purge_dm_status}**"
             ),
             inline=False,
         )
 
         embed.add_field(
-            name="Role logic (target group)",
+            name="Role logic (purge target group)",
             value=(
                 "- Requires **Member** role\n"
                 "- **Redditor** is optional (depending on role_mode)\n"
@@ -99,7 +118,14 @@ def setup(bot):
             inline=False,
         )
 
-        allowed_preview = "\n".join(f"- `{x}`" for x in sorted(ALLOWED_USER_IDS))
+        # Keep XC URL visible for staff sanity-checking (it’s already in .env)
+        embed.add_field(
+            name="XC",
+            value=f"- XC URL: <{XC_URL}>",
+            inline=False,
+        )
+
+        allowed_preview = "\n".join(f"- `{x}`" for x in sorted(ALLOWED_USER_IDS)) or "(none configured)"
         embed.add_field(
             name="Access control",
             value=(
@@ -108,7 +134,8 @@ def setup(bot):
                 "- `/list_only_allowed_roles`\n"
                 "- `/check`\n"
                 "- `/check_panel`\n"
-                "- `/bot_info`\n\n"
+                "- `/bot_info`\n"
+                "- `/give_creds`\n\n"
                 f"Allowed user IDs:\n{allowed_preview}"
             ),
             inline=False,
@@ -118,8 +145,9 @@ def setup(bot):
             name="User tools",
             value=(
                 "- `/checkme` (cooldown enforced)\n"
-                "- Panel button: **Check my status** (persistent)\n"
-                "- Panel link: **Open a ticket**"
+                "- Panel button: **Check my status**\n"
+                "- `/invite` *(permission-gated by channel perms)*\n"
+                "- `/move_server` *(requires East/West role)*"
             ),
             inline=False,
         )
@@ -129,7 +157,7 @@ def setup(bot):
 
         rtt_ms = int((time.perf_counter() - t0) * 1000)
         embed.set_field_at(
-            3,  # "Latency" field index (0-based): Version/Uptime/Entrypoint/Latency
+            3,  # Latency field index (0-based): Version/Uptime/Entrypoint/Latency
             name="Latency",
             value=f"- Gateway: **{gateway_ms}ms**\n- Interaction: **{rtt_ms}ms**",
             inline=False,
