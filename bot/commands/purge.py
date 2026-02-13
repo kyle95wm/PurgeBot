@@ -23,6 +23,11 @@ from ..helpers import (
 from ..views import SimplePagedView, GraceCancelView
 
 
+# DM retry behavior (keep small to avoid stalling purges)
+DM_RETRIES = 2          # total attempts = 1 + retries (so 3 total)
+DM_RETRY_DELAY = 1.5    # seconds between attempts
+
+
 def _render_purge_dm(*, member: discord.Member, guild: discord.Guild, days: int, role_mode: str) -> str:
     """
     Placeholders supported in PURGE_DM_TEMPLATE:
@@ -327,18 +332,27 @@ def setup(bot):
         kicked = 0
         failed: list[str] = []
 
-        dm_sent_count = 0
-        dm_failed_count = 0
+        dm_sent = 0
+        dm_failed: list[int] = []  # store user IDs for mention formatting
 
         for m in to_kick:
-            # DM attempt before kick (env-only)
+            # DM attempt before kick (env-only) with retries
             if PURGE_DM_ENABLED and PURGE_DM_TEMPLATE:
-                try:
-                    msg = _render_purge_dm(member=m, guild=guild, days=days, role_mode=str(role_mode))
-                    await m.send(msg, allowed_mentions=NO_PINGS)
-                    dm_sent_count += 1
-                except Exception:
-                    dm_failed_count += 1
+                msg = _render_purge_dm(member=m, guild=guild, days=days, role_mode=str(role_mode))
+
+                sent = False
+                for attempt in range(DM_RETRIES + 1):
+                    try:
+                        await m.send(msg, allowed_mentions=NO_PINGS)
+                        dm_sent += 1
+                        sent = True
+                        break
+                    except Exception:
+                        if attempt < DM_RETRIES:
+                            await asyncio.sleep(DM_RETRY_DELAY)
+
+                if not sent:
+                    dm_failed.append(m.id)
 
             try:
                 await m.kick(reason=f"Purge: role_mode={role_mode} and joined > {days} days ago (by {interaction.user.id})")
@@ -353,7 +367,7 @@ def setup(bot):
             title="Purge complete",
             description=(
                 f"Kicked **{kicked}** / **{len(to_kick)}** member(s).\n"
-                f"Purge DMs — sent: **{dm_sent_count}**, failed: **{dm_failed_count}**"
+                f"Purge DMs — sent: **{dm_sent}**, failed: **{len(dm_failed)}**"
             ),
         )
 
@@ -364,17 +378,34 @@ def setup(bot):
                 snippet += f"\n… and {len(failed) - 10} more"
             done_embed.add_field(name="Failed kicks (top 10)", value=snippet[:1024], inline=False)
 
+        if dm_failed:
+            mentions = "\n".join(f"• <@{uid}> (`{uid}`)" for uid in dm_failed[:10])
+            if len(dm_failed) > 10:
+                mentions += f"\n… and {len(dm_failed) - 10} more"
+            done_embed.add_field(name="DM failures (top 10)", value=mentions[:1024], inline=False)
+
         await interaction.followup.send(embed=done_embed, ephemeral=True, allowed_mentions=NO_PINGS)
 
-        finished_audit = discord.Embed(
-            title="Purge complete",
-            description=(
-                f"Invoker: {interaction.user} ({interaction.user.id})\n"
-                f"Days: {days}\n"
-                f"Role mode: {role_mode}\n"
-                f"Kicked: {kicked}/{len(to_kick)}\n"
-                f"Failures: {len(failed)}\n"
-                f"Purge DMs: sent={dm_sent_count}, failed={dm_failed_count}\n"
-            ),
+        dm_total = len(to_kick) if (PURGE_DM_ENABLED and PURGE_DM_TEMPLATE) else 0
+
+        desc = (
+            f"Invoker: {interaction.user} ({interaction.user.id})\n"
+            f"Days: {days}\n"
+            f"Role mode: {role_mode}\n"
+            f"Kicked: {kicked}/{len(to_kick)}\n"
+            f"Kick failures: {len(failed)}\n"
         )
+        if dm_total:
+            desc += f"DM sent: {dm_sent}/{dm_total}\nDM failed: {len(dm_failed)}\n"
+        else:
+            desc += "DM: disabled\n"
+
+        finished_audit = discord.Embed(title="Purge complete", description=desc)
+
+        if dm_failed:
+            mentions = "\n".join(f"• <@{uid}> (`{uid}`)" for uid in dm_failed[:10])
+            if len(dm_failed) > 10:
+                mentions += f"\n… and {len(dm_failed) - 10} more"
+            finished_audit.add_field(name="DM failures (top 10)", value=mentions[:1024], inline=False)
+
         await send_audit_embed(guild, finished_audit)
