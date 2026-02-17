@@ -10,9 +10,14 @@ from . import move_server
 
 PANEL_TITLE = "Move Server Requests"
 PANEL_BODY = (
-    "Use the button below to request a server move.\n"
+    "Use the button below to request a server move.\n\n"
+    "You might want to move servers due to timezone differences, viewing habits, "
+    "or when you’re most active on Plex.\n\n"
+    "Switching servers can help ensure scheduled maintenance windows don’t overlap "
+    "with the times you usually watch content.\n\n"
     "You’ll pick your destination, then submit your email + reason.\n\n"
-    "If you don’t receive a DM after staff handles it, check the fallback channel and/or open a ticket."
+    "If you don’t receive a DM after staff handles it, check <#1458533908701380719> "
+    "and/or open a ticket."
 )
 
 PANEL_COLOR = 0xA9C9FF
