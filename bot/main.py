@@ -13,6 +13,7 @@ from .invite_tracking import snapshot_invites_to_db, detect_used_invite, log_joi
 from .commands import checkme, check, check_panel, list_roles, purge, bot_info, give_creds, test_purge_dm, whois
 from .commands import invite as invite_cmd
 from .commands import move_server
+from .commands import move_panel  # NEW
 
 
 intents = discord.Intents.default()
@@ -35,6 +36,9 @@ async def on_ready():
 
     # Persistent view for move_server staff buttons
     bot.add_view(move_server.MoveServerActionView())
+
+    # Persistent view for move_panel button
+    bot.add_view(move_panel.MovePanelView())
 
     await ensure_db()
 
@@ -114,8 +118,8 @@ def load_commands():
     invite_cmd.setup(bot)
     whois.setup(bot)
 
-    # new
     move_server.setup(bot)
+    move_panel.setup(bot)  # NEW
 
 
 load_commands()
