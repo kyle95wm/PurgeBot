@@ -9,12 +9,19 @@ from ..helpers import NO_PINGS, send_audit_embed
 
 ROLE_EAST_ID = 1466939252024541423  # SS-VOD East
 ROLE_WEST_ID = 1466938881764233396  # SS-VOD West
+ROLE_SOUTH_ID = 1472852339730681998  # SS-VOD South
 
 MOVE_REQUESTS_CHANNEL_ID = 1468797510897373425
 MOVE_SERVER_COOLDOWN_SECONDS = 60 * 60  # 1 hour
 
 # user_id -> last used timestamp
 MOVE_SERVER_LAST_USED: dict[int, dt.datetime] = {}
+
+ROLE_NAMES = {
+    ROLE_EAST_ID: "SS-VOD East",
+    ROLE_WEST_ID: "SS-VOD West",
+    ROLE_SOUTH_ID: "SS-VOD South",
+}
 
 
 def _now() -> dt.datetime:
@@ -25,20 +32,21 @@ def _get_role_ids(member: discord.Member) -> set[int]:
     return {r.id for r in member.roles if r != member.guild.default_role}
 
 
-def _role_direction(member: discord.Member):
+def _get_current_server_role(member: discord.Member) -> int | None:
     """
-    Returns (from_name, from_role_id, to_name, to_role_id) or None.
-    Must have exactly one of East/West.
+    Returns the role ID of the current server if the member has exactly one of East/West/South.
+    Otherwise returns None.
     """
     role_ids = _get_role_ids(member)
-    has_east = ROLE_EAST_ID in role_ids
-    has_west = ROLE_WEST_ID in role_ids
+    servers = [rid for rid in (ROLE_EAST_ID, ROLE_WEST_ID, ROLE_SOUTH_ID) if rid in role_ids]
+    if len(servers) != 1:
+        return None
+    return servers[0]
 
-    if has_east and not has_west:
-        return ("SS-VOD East", ROLE_EAST_ID, "SS-VOD West", ROLE_WEST_ID)
-    if has_west and not has_east:
-        return ("SS-VOD West", ROLE_WEST_ID, "SS-VOD East", ROLE_EAST_ID)
-    return None
+
+def _allowed_destinations(current_role_id: int) -> list[int]:
+    all_servers = [ROLE_EAST_ID, ROLE_WEST_ID, ROLE_SOUTH_ID]
+    return [rid for rid in all_servers if rid != current_role_id]
 
 
 async def _fetch_requests_channel(guild: discord.Guild) -> discord.TextChannel | None:
@@ -81,7 +89,6 @@ def _parse_footer_ids(embed: discord.Embed) -> tuple[int, int, str]:
     """
     footer = (embed.footer.text or "").strip()
 
-    # super defensive parsing
     request_id = "UNKNOWN"
     requester_id = 0
     source_channel_id = 0
@@ -112,9 +119,11 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
         max_length=1000,
     )
 
-    def __init__(self, source_channel_id: int):
+    def __init__(self, *, source_channel_id: int, from_role_id: int, to_role_id: int):
         super().__init__()
         self.source_channel_id = source_channel_id
+        self.from_role_id = from_role_id
+        self.to_role_id = to_role_id
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
@@ -134,23 +143,34 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
             await interaction.followup.send(f"You can submit another request in {mins} minute(s).", ephemeral=True)
             return
 
-        direction = _role_direction(interaction.user)
-        if direction is None:
+        # Re-check their roles at submit time (in case roles changed)
+        current_role = _get_current_server_role(interaction.user)
+        if current_role is None:
             await interaction.followup.send(
-                "You must have exactly one of:\n- SS-VOD East\n- SS-VOD West",
+                "You must have exactly one of:\n- SS-VOD East\n- SS-VOD West\n- SS-VOD South",
+                ephemeral=True,
+            )
+            return
+
+        allowed = _allowed_destinations(current_role)
+        if self.to_role_id not in allowed:
+            await interaction.followup.send(
+                "That destination is not valid for your current server role. Please run `/move_server` again.",
                 ephemeral=True,
             )
             return
 
         _mark_used(interaction.user.id)
 
-        from_name, _, to_name, _ = direction
         staff_ch = await _fetch_requests_channel(guild)
         if not staff_ch:
             await interaction.followup.send("Staff channel not found.", ephemeral=True)
             return
 
         rid = _new_request_id()
+
+        from_name = ROLE_NAMES.get(current_role, str(current_role))
+        to_name = ROLE_NAMES.get(self.to_role_id, str(self.to_role_id))
 
         embed = discord.Embed(
             title="Move server request",
@@ -172,10 +192,15 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
             allowed_mentions=discord.AllowedMentions(users=True),
         )
 
-        # optional audit log
         audit = discord.Embed(
             title="Move request created",
-            description=f"Requester: {interaction.user} ({interaction.user.id})\nRequest ID: `{rid}`\nStaff msg: {msg.jump_url}",
+            description=(
+                f"Requester: {interaction.user} ({interaction.user.id})\n"
+                f"Request ID: `{rid}`\n"
+                f"From: {from_name}\n"
+                f"To: {to_name}\n"
+                f"Staff msg: {msg.jump_url}"
+            ),
         )
         await send_audit_embed(guild, audit)
 
@@ -216,7 +241,6 @@ class AcceptMoveModal(discord.ui.Modal, title="Accept move request"):
             except Exception:
                 dm_ok = False
 
-        # Fallback ping in the ORIGINAL channel if DM fails
         if not dm_ok:
             source_channel = guild.get_channel(self.source_channel_id)
             if isinstance(source_channel, discord.TextChannel):
@@ -236,7 +260,12 @@ class AcceptMoveModal(discord.ui.Modal, title="Accept move request"):
 
         audit = discord.Embed(
             title="Move request accepted",
-            description=f"Request ID: `{self.request_id}`\nRequester: <@{self.requester_id}>\nHandler: {interaction.user} ({interaction.user.id})\nDM: {'sent' if dm_ok else 'failed'}",
+            description=(
+                f"Request ID: `{self.request_id}`\n"
+                f"Requester: <@{self.requester_id}>\n"
+                f"Handler: {interaction.user} ({interaction.user.id})\n"
+                f"DM: {'sent' if dm_ok else 'failed'}"
+            ),
         )
         await send_audit_embed(guild, audit)
 
@@ -276,7 +305,6 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
             except Exception:
                 dm_ok = False
 
-        # Fallback ping in the ORIGINAL channel if DM fails (no reason posted)
         if not dm_ok:
             source_channel = guild.get_channel(self.source_channel_id)
             if isinstance(source_channel, discord.TextChannel):
@@ -297,7 +325,12 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
 
         audit = discord.Embed(
             title="Move request denied",
-            description=f"Request ID: `{self.request_id}`\nRequester: <@{self.requester_id}>\nHandler: {interaction.user} ({interaction.user.id})\nDM: {'sent' if dm_ok else 'failed'}",
+            description=(
+                f"Request ID: `{self.request_id}`\n"
+                f"Requester: <@{self.requester_id}>\n"
+                f"Handler: {interaction.user} ({interaction.user.id})\n"
+                f"DM: {'sent' if dm_ok else 'failed'}"
+            ),
         )
         await send_audit_embed(guild, audit)
 
@@ -362,22 +395,98 @@ class MoveServerActionView(discord.ui.View):
         )
 
 
+class DestinationSelect(discord.ui.Select):
+    def __init__(self, *, from_role_id: int):
+        self.from_role_id = from_role_id
+        opts = []
+        for rid in _allowed_destinations(from_role_id):
+            opts.append(discord.SelectOption(label=ROLE_NAMES.get(rid, str(rid)), value=str(rid)))
+
+        super().__init__(
+            placeholder="Select the server you want to move to…",
+            min_values=1,
+            max_values=1,
+            options=opts,
+            custom_id="move_server:dest_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        # Once they pick a destination, open the modal
+        if not isinstance(interaction.user, discord.Member) or interaction.guild is None:
+            await interaction.response.send_message("Run this in a server.", ephemeral=True)
+            return
+
+        # Cooldown check early
+        on_cd, remaining = _check_cooldown(interaction.user.id)
+        if on_cd:
+            mins = max(1, remaining // 60)
+            await interaction.response.send_message(f"You can submit another request in {mins} minute(s).", ephemeral=True)
+            return
+
+        # Re-check their current role to ensure the options are still valid
+        current_role = _get_current_server_role(interaction.user)
+        if current_role is None:
+            await interaction.response.send_message(
+                "You must have exactly one of:\n- SS-VOD East\n- SS-VOD West\n- SS-VOD South",
+                ephemeral=True,
+            )
+            return
+
+        to_role_id = int(self.values[0])
+        if to_role_id not in _allowed_destinations(current_role):
+            await interaction.response.send_message(
+                "That destination isn’t valid for your current role. Please run `/move_server` again.",
+                ephemeral=True,
+            )
+            return
+
+        source_channel_id = interaction.channel.id if interaction.channel else 0
+        await interaction.response.send_modal(
+            MoveServerRequestModal(
+                source_channel_id=source_channel_id,
+                from_role_id=current_role,
+                to_role_id=to_role_id,
+            )
+        )
+
+
+class DestinationSelectView(discord.ui.View):
+    def __init__(self, *, from_role_id: int):
+        super().__init__(timeout=300)  # 5 minutes
+        self.add_item(DestinationSelect(from_role_id=from_role_id))
+
+
 def setup(bot):
-    @bot.tree.command(name="move_server", description="Request server move (East/West)")
+    @bot.tree.command(name="move_server", description="Request server move (East/West/South)")
     async def move_server(interaction: discord.Interaction):
         guild = interaction.guild
         if guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("Run this in a server.", ephemeral=True)
             return
 
-        # Fast eligibility check before opening modal
-        if _role_direction(interaction.user) is None:
+        current_role = _get_current_server_role(interaction.user)
+        if current_role is None:
             await interaction.response.send_message(
-                "You must have exactly one of:\n- SS-VOD East\n- SS-VOD West",
+                "You must have exactly one of:\n- SS-VOD East\n- SS-VOD West\n- SS-VOD South",
                 ephemeral=True,
             )
             return
 
-        # Modal needs the channel where the user ran the command (for DM-fail fallback)
-        source_channel_id = interaction.channel.id if interaction.channel else 0
-        await interaction.response.send_modal(MoveServerRequestModal(source_channel_id=source_channel_id))
+        on_cd, remaining = _check_cooldown(interaction.user.id)
+        if on_cd:
+            mins = max(1, remaining // 60)
+            await interaction.response.send_message(
+                f"You can submit another request in {mins} minute(s).",
+                ephemeral=True,
+            )
+            return
+
+        from_name = ROLE_NAMES.get(current_role, str(current_role))
+        view = DestinationSelectView(from_role_id=current_role)
+
+        await interaction.response.send_message(
+            f"Current server: **{from_name}**\nSelect where you want to move to:",
+            ephemeral=True,
+            view=view,
+            allowed_mentions=NO_PINGS,
+        )
