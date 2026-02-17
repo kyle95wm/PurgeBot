@@ -247,9 +247,22 @@ class DestinationSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         view: "MoveServerDestinationView" = self.view  # type: ignore
-        view.selected_to_role_id = int(self.values[0])
+
+        # Save selection
+        chosen = int(self.values[0])
+        view.selected_to_role_id = chosen
+
+        # OPTION B behavior:
+        # - lock the dropdown once a choice is made
+        # - enable Continue
+        self.disabled = True
         view.continue_button.disabled = False
-        await interaction.response.edit_message(view=view)
+
+        chosen_name = SERVER_ROLES.get(chosen, str(chosen))
+        await interaction.response.edit_message(
+            content=f"Destination saved: **{chosen_name}**\nClick **Continue** to submit your request.",
+            view=view,
+        )
 
 
 class MoveServerDestinationView(discord.ui.View):
