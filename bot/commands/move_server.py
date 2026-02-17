@@ -21,6 +21,9 @@ SERVER_ROLES: dict[int, str] = {
 MOVE_REQUESTS_CHANNEL_ID = 1468797510897373425
 MOVE_SERVER_COOLDOWN_SECONDS = 60 * 60  # 1 hour
 
+# Where to ping the requester if DM fails (always this channel)
+MOVE_FALLBACK_PING_CHANNEL_ID = 1458533908701380719
+
 # user_id -> last used timestamp (in-memory)
 MOVE_SERVER_LAST_USED: dict[int, dt.datetime] = {}
 
@@ -74,6 +77,17 @@ async def _fetch_requests_channel(guild: discord.Guild) -> discord.TextChannel |
         return ch
     try:
         fetched = await guild.fetch_channel(MOVE_REQUESTS_CHANNEL_ID)
+        return fetched if isinstance(fetched, discord.TextChannel) else None
+    except Exception:
+        return None
+
+
+async def _fetch_fallback_ping_channel(guild: discord.Guild) -> discord.TextChannel | None:
+    ch = guild.get_channel(MOVE_FALLBACK_PING_CHANNEL_ID)
+    if isinstance(ch, discord.TextChannel):
+        return ch
+    try:
+        fetched = await guild.fetch_channel(MOVE_FALLBACK_PING_CHANNEL_ID)
         return fetched if isinstance(fetched, discord.TextChannel) else None
     except Exception:
         return None
@@ -146,14 +160,12 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
 
         await interaction.response.defer(ephemeral=True)
 
-        # Cooldown check (do it here too, just in case they wait a while)
         on_cd, remaining = _check_cooldown(interaction.user.id)
         if on_cd:
             mins = max(1, remaining // 60)
             await interaction.followup.send(f"You can submit another request in {mins} minute(s).", ephemeral=True)
             return
 
-        # Validate they still have exactly one server role, and that it matches the from_role
         current = _get_current_server_role(interaction.user)
         if current is None:
             allowed = "\n".join(f"- {name}" for name in SERVER_ROLES.values())
@@ -170,7 +182,6 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
             )
             return
 
-        # Validate destination
         if self.to_role_id not in _allowed_destinations(current):
             await interaction.followup.send(
                 "That destination is not valid for your current server role. Please run `/move_server` again.",
@@ -228,14 +239,10 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
 
 class DestinationSelect(discord.ui.Select):
     def __init__(self, *, from_role_id: int, destination_role_ids: list[int]):
-        options = []
-        for rid in destination_role_ids:
-            options.append(
-                discord.SelectOption(
-                    label=SERVER_ROLES.get(rid, str(rid)),
-                    value=str(rid),
-                )
-            )
+        options = [
+            discord.SelectOption(label=SERVER_ROLES.get(rid, str(rid)), value=str(rid))
+            for rid in destination_role_ids
+        ]
 
         super().__init__(
             placeholder="Pick a destination server…",
@@ -248,12 +255,11 @@ class DestinationSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         view: "MoveServerDestinationView" = self.view  # type: ignore
 
-        # Save selection
         chosen = int(self.values[0])
         view.selected_to_role_id = chosen
 
-        # OPTION B behavior:
-        # - lock the dropdown once a choice is made
+        # Option B:
+        # - disable dropdown after pick
         # - enable Continue
         self.disabled = True
         view.continue_button.disabled = False
@@ -320,7 +326,7 @@ class AcceptMoveModal(discord.ui.Modal, title="Accept move request"):
     def __init__(self, *, requester_id: int, source_channel_id: int, request_id: str, from_role_id: int, to_role_id: int):
         super().__init__()
         self.requester_id = requester_id
-        self.source_channel_id = source_channel_id
+        self.source_channel_id = source_channel_id  # kept for metadata; fallback ping channel is fixed
         self.request_id = request_id
         self.from_role_id = from_role_id
         self.to_role_id = to_role_id
@@ -350,11 +356,11 @@ class AcceptMoveModal(discord.ui.Modal, title="Accept move request"):
             except Exception:
                 dm_ok = False
 
-        # Fallback ping in original channel if DM fails
+        # Fallback ping in fixed channel if DM fails
         if not dm_ok:
-            source_channel = guild.get_channel(self.source_channel_id)
-            if isinstance(source_channel, discord.TextChannel):
-                await source_channel.send(
+            fb = await _fetch_fallback_ping_channel(guild)
+            if fb:
+                await fb.send(
                     f"<@{self.requester_id}> Your move request was approved. "
                     f"Please check your DMs. If you didn’t get one, open a support ticket.",
                     allowed_mentions=discord.AllowedMentions(users=True),
@@ -363,7 +369,7 @@ class AcceptMoveModal(discord.ui.Modal, title="Accept move request"):
         embed = interaction.message.embeds[0].copy() if interaction.message.embeds else discord.Embed(title="Move server request")
         embed.add_field(name="Status", value="✅ Accepted", inline=True)
         embed.add_field(name="Handled by", value=str(interaction.user), inline=False)
-        embed.add_field(name="DM", value="✅ Sent" if dm_ok else "⚠️ Failed (fallback ping posted)", inline=False)
+        embed.add_field(name="DM", value="✅ Sent" if dm_ok else f"⚠️ Failed (fallback ping in <#{MOVE_FALLBACK_PING_CHANNEL_ID}>)", inline=False)
 
         await interaction.message.edit(embed=embed, view=None)
         await interaction.followup.send("Approved.", ephemeral=True)
@@ -392,7 +398,7 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
     def __init__(self, *, requester_id: int, source_channel_id: int, request_id: str, from_role_id: int, to_role_id: int):
         super().__init__()
         self.requester_id = requester_id
-        self.source_channel_id = source_channel_id
+        self.source_channel_id = source_channel_id  # kept for metadata; fallback ping channel is fixed
         self.request_id = request_id
         self.from_role_id = from_role_id
         self.to_role_id = to_role_id
@@ -420,11 +426,11 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
             except Exception:
                 dm_ok = False
 
-        # Fallback ping in original channel if DM fails (no reason posted)
+        # Fallback ping in fixed channel if DM fails (no reason posted)
         if not dm_ok:
-            source_channel = guild.get_channel(self.source_channel_id)
-            if isinstance(source_channel, discord.TextChannel):
-                await source_channel.send(
+            fb = await _fetch_fallback_ping_channel(guild)
+            if fb:
+                await fb.send(
                     f"<@{self.requester_id}> Your move request was denied. "
                     f"If you’d like to discuss it, please open a support ticket.",
                     allowed_mentions=discord.AllowedMentions(users=True),
@@ -433,7 +439,7 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
         embed = interaction.message.embeds[0].copy() if interaction.message.embeds else discord.Embed(title="Move server request")
         embed.add_field(name="Status", value="❌ Denied", inline=True)
         embed.add_field(name="Handled by", value=str(interaction.user), inline=False)
-        embed.add_field(name="DM", value="✅ Sent" if dm_ok else "⚠️ Failed (fallback ping posted)", inline=False)
+        embed.add_field(name="DM", value="✅ Sent" if dm_ok else f"⚠️ Failed (fallback ping in <#{MOVE_FALLBACK_PING_CHANNEL_ID}>)", inline=False)
         embed.add_field(name="Deny reason (staff note)", value=self.deny_reason.value.strip()[:1024], inline=False)
 
         await interaction.message.edit(embed=embed, view=None)
@@ -536,7 +542,6 @@ def setup(bot):
             await interaction.response.send_message("Run this in a server.", ephemeral=True)
             return
 
-        # Cooldown check early
         on_cd, remaining = _check_cooldown(interaction.user.id)
         if on_cd:
             mins = max(1, remaining // 60)
