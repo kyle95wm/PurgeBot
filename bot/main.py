@@ -14,7 +14,7 @@ from .commands import checkme, check, check_panel, list_roles, purge, bot_info, 
 from .commands import invite as invite_cmd
 from .commands import move_server
 from .commands import move_panel  # NEW
-
+from .commands import serverinfo
 
 intents = discord.Intents.default()
 intents.members = True
@@ -117,7 +117,7 @@ def load_commands():
     test_purge_dm.setup(bot)
     invite_cmd.setup(bot)
     whois.setup(bot)
-
+    serverinfo.setup(bot)
     move_server.setup(bot)
     move_panel.setup(bot)  # NEW
 
