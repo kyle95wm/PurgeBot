@@ -40,10 +40,10 @@ def setup(bot):
     async def serverinfo(interaction: discord.Interaction):
         guild = interaction.guild
         if guild is None:
-            await interaction.response.send_message("Run this in a server, not DMs.", ephemeral=false)
+            await interaction.response.send_message("Run this in a server, not DMs.", ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=false)
+        await interaction.response.defer()
 
         # Member breakdown (requires Members intent + ability to fetch members)
         humans = bots = 0
@@ -95,4 +95,4 @@ def setup(bot):
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
 
-        await interaction.followup.send(embed=embed, ephemeral=false, allowed_mentions=NO_PINGS)
+        await interaction.followup.send(embed=embed, allowed_mentions=NO_PINGS)
