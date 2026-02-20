@@ -13,9 +13,9 @@ from ..helpers import NO_PINGS, send_audit_embed
 # Add future servers by adding ONE line here.
 # ============================================================
 SERVER_ROLES: dict[int, str] = {
-    1466939252024541423: "SS-VOD East",
-    1466938881764233396: "SS-VOD West",
-    1472852339730681998: "SS-VOD South",
+    1466939252024541423: "SS East",
+    1466938881764233396: "SS West",
+    1472852339730681998: "SS South",
 }
 
 MOVE_REQUESTS_CHANNEL_ID = 1468797510897373425
