@@ -127,6 +127,22 @@ def _parse_footer_ids(embed: discord.Embed) -> tuple[int, int, str, int, int]:
     return requester_id, source_channel_id, request_id, from_role_id, to_role_id
 
 
+async def _safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True) -> bool:
+    """
+    Returns True if we successfully deferred (or it was already responded),
+    False if the interaction is already dead (Unknown interaction).
+    """
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=ephemeral)
+        return True
+    except discord.NotFound:
+        # 404 Unknown interaction (took too long / stale modal submission)
+        return False
+    except discord.HTTPException:
+        return False
+
+
 # ============================================================
 # USER FLOW:
 # 1) /move_server -> ephemeral dropdown to choose destination
@@ -158,7 +174,9 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
             await interaction.response.send_message("Could not resolve member info.", ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=True)
+        ok = await _safe_defer(interaction, ephemeral=True)
+        if not ok:
+            return
 
         on_cd, remaining = _check_cooldown(interaction.user.id)
         if on_cd:
@@ -332,7 +350,9 @@ class AcceptMoveModal(discord.ui.Modal, title="Accept move request"):
         self.to_role_id = to_role_id
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        ok = await _safe_defer(interaction, ephemeral=True)
+        if not ok:
+            return
 
         guild = interaction.guild
         if not guild or not interaction.message:
@@ -369,7 +389,11 @@ class AcceptMoveModal(discord.ui.Modal, title="Accept move request"):
         embed = interaction.message.embeds[0].copy() if interaction.message.embeds else discord.Embed(title="Move server request")
         embed.add_field(name="Status", value="✅ Accepted", inline=True)
         embed.add_field(name="Handled by", value=str(interaction.user), inline=False)
-        embed.add_field(name="DM", value="✅ Sent" if dm_ok else f"⚠️ Failed (fallback ping in <#{MOVE_FALLBACK_PING_CHANNEL_ID}>)", inline=False)
+        embed.add_field(
+            name="DM",
+            value="✅ Sent" if dm_ok else f"⚠️ Failed (fallback ping in <#{MOVE_FALLBACK_PING_CHANNEL_ID}>)",
+            inline=False,
+        )
 
         await interaction.message.edit(embed=embed, view=None)
         await interaction.followup.send("Approved.", ephemeral=True)
@@ -404,7 +428,9 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
         self.to_role_id = to_role_id
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        ok = await _safe_defer(interaction, ephemeral=True)
+        if not ok:
+            return
 
         guild = interaction.guild
         if not guild or not interaction.message:
@@ -439,7 +465,11 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
         embed = interaction.message.embeds[0].copy() if interaction.message.embeds else discord.Embed(title="Move server request")
         embed.add_field(name="Status", value="❌ Denied", inline=True)
         embed.add_field(name="Handled by", value=str(interaction.user), inline=False)
-        embed.add_field(name="DM", value="✅ Sent" if dm_ok else f"⚠️ Failed (fallback ping in <#{MOVE_FALLBACK_PING_CHANNEL_ID}>)", inline=False)
+        embed.add_field(
+            name="DM",
+            value="✅ Sent" if dm_ok else f"⚠️ Failed (fallback ping in <#{MOVE_FALLBACK_PING_CHANNEL_ID}>)",
+            inline=False,
+        )
         embed.add_field(name="Deny reason (staff note)", value=self.deny_reason.value.strip()[:1024], inline=False)
 
         await interaction.message.edit(embed=embed, view=None)
