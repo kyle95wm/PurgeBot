@@ -154,6 +154,34 @@ def _green_embed(title: str, desc: str) -> discord.Embed:
     return discord.Embed(title=title, description=desc, color=0x57F287)  # green-ish
 
 
+def _build_afk_status_embed(*, member: discord.abc.User, afk_data: Optional[dict]) -> discord.Embed:
+    """
+    Green embed if not AFK, red if AFK. Used by /afk_status.
+    """
+    if not afk_data:
+        return _green_embed("AFK status", f"{member.mention} is not AFK.")
+
+    lines: list[str] = [f"{member.mention} is AFK."]
+
+    msg_txt = (afk_data.get("message") or "").strip()
+    if msg_txt:
+        lines.append(f"Message: {msg_txt}")
+
+    until_ts = afk_data.get("until_ts")
+    if until_ts:
+        try:
+            eta_dt = dt.datetime.fromtimestamp(int(until_ts), tz=dt.timezone.utc)
+            lines.append(f"ETA: {_abs_ts(eta_dt)} ({_rel_ts(eta_dt)})")
+        except Exception:
+            pass
+
+    set_at = afk_data.get("set_at")
+    if set_at:
+        lines.append(f"Set: {_rel_ts(set_at)}")
+
+    return _red_embed("AFK status", "\n".join(lines))
+
+
 async def _notify_afk(message: discord.Message, afk_member: discord.Member, afk_data: dict) -> None:
     guild = message.guild
     if guild is None:
@@ -304,6 +332,27 @@ def setup(bot):
             desc_lines.append(f"ETA: {_abs_ts(eta_dt)} ({_rel_ts(eta_dt)})")
 
         embed = _red_embed("AFK enabled", "\n".join(desc_lines))
+        await interaction.response.send_message(embed=embed, ephemeral=True, allowed_mentions=NO_PINGS)
+
+    # -------------------------
+    # /afk_status (anyone)
+    # -------------------------
+    @bot.tree.command(name="afk_status", description="Check AFK status for yourself or another user.")
+    @app_commands.describe(user="User to check (defaults to you).")
+    async def afk_status(interaction: discord.Interaction, user: discord.Member | None = None):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("Run this in a server.", ephemeral=True)
+            return
+
+        target = user or interaction.user
+        if isinstance(target, discord.User) and not isinstance(target, discord.Member):
+            # should be rare for this command signature, but keep it safe
+            await interaction.response.send_message("Could not resolve that member in this server.", ephemeral=True)
+            return
+
+        afk_data = await _get_afk(guild_id=guild.id, user_id=target.id)  # type: ignore[arg-type]
+        embed = _build_afk_status_embed(member=target, afk_data=afk_data)  # type: ignore[arg-type]
         await interaction.response.send_message(embed=embed, ephemeral=True, allowed_mentions=NO_PINGS)
 
     # -------------------------
