@@ -1,5 +1,4 @@
 import datetime as dt
-import re
 from typing import Optional
 
 import discord
@@ -12,79 +11,48 @@ from ..db import connect
 from .server_roles import SERVER_ROLES
 
 
-def _now() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
-
-
 def _iso_now() -> str:
-    return _now().isoformat()
+    return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
-def _parse_until(s: str) -> Optional[int]:
-    """
-    Accepts:
-      - Discord timestamps: <t:1700000000:R>, <t:1700000000:F>, etc
-      - Relative like: 2h, 30m, 1d, 45s, 2w
-      - Raw unix seconds: 1700000000
-    Returns unix seconds or None.
-    """
-    s = s.strip()
-
-    if re.fullmatch(r"\d{9,12}", s):
-        try:
-            return int(s)
-        except Exception:
-            return None
-
-    m = re.match(r"^<t:(\d+)(?::[tTdDfFR])?>$", s)
-    if m:
-        return int(m.group(1))
-
-    m = re.match(r"^(\d+)\s*([smhdw])$", s, re.IGNORECASE)
-    if m:
-        n = int(m.group(1))
-        unit = m.group(2).lower()
-        mult = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[unit]
-        return int((_now().timestamp()) + n * mult)
-
-    return None
-
-
-async def _set_status(
-    *,
-    guild_id: int,
-    role_id: int,
-    is_open: bool,
-    note: Optional[str],
-    until_ts: Optional[int],
-    updated_by: int,
-) -> None:
+async def _ensure_table() -> None:
     async with connect() as db:
         await db.execute(
             """
-            INSERT INTO server_status (guild_id, role_id, is_open, note, until_ts, updated_by, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(guild_id, role_id) DO UPDATE SET
-              is_open=excluded.is_open,
-              note=excluded.note,
-              until_ts=excluded.until_ts,
-              updated_by=excluded.updated_by,
-              updated_at=excluded.updated_at
-            """,
-            (
-                guild_id,
-                role_id,
-                1 if is_open else 0,
-                (note.strip() if note else None),
-                until_ts,
-                updated_by,
-                _iso_now(),
-            ),
+            CREATE TABLE IF NOT EXISTS server_status (
+              guild_id INTEGER NOT NULL,
+              role_id INTEGER NOT NULL,
+              is_open INTEGER NOT NULL,
+              note TEXT,
+              updated_at TEXT NOT NULL,
+              updated_by INTEGER,
+              PRIMARY KEY (guild_id, role_id)
+            )
+            """
         )
         await db.commit()
 
 
-async def _clear_status(*, guild_id: int, role_id: int) -> bool:
+async def set_status(*, guild_id: int, role_id: int, is_open: bool, note: Optional[str], updated_by: int) -> None:
+    await _ensure_table()
+    async with connect() as db:
+        await db.execute(
+            """
+            INSERT INTO server_status (guild_id, role_id, is_open, note, updated_at, updated_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, role_id) DO UPDATE SET
+              is_open=excluded.is_open,
+              note=excluded.note,
+              updated_at=excluded.updated_at,
+              updated_by=excluded.updated_by
+            """,
+            (guild_id, role_id, 1 if is_open else 0, note, _iso_now(), updated_by),
+        )
+        await db.commit()
+
+
+async def clear_status(*, guild_id: int, role_id: int) -> bool:
+    await _ensure_table()
     async with connect() as db:
         cur = await db.execute(
             "DELETE FROM server_status WHERE guild_id = ? AND role_id = ?",
@@ -94,171 +62,115 @@ async def _clear_status(*, guild_id: int, role_id: int) -> bool:
         return (cur.rowcount or 0) > 0
 
 
-async def _get_status_row(*, guild_id: int, role_id: int) -> Optional[dict]:
+async def get_effective_status(*, guild_id: int, role_id: int) -> dict:
+    """
+    Default is OPEN unless overridden in DB.
+    Returns:
+      {"is_open": bool, "note": str|None, "updated_at": str|None, "updated_by": int|None, "is_default": bool}
+    """
+    await _ensure_table()
     async with connect() as db:
         cur = await db.execute(
-            "SELECT is_open, note, until_ts, updated_by, updated_at FROM server_status WHERE guild_id = ? AND role_id = ?",
+            "SELECT is_open, note, updated_at, updated_by FROM server_status WHERE guild_id = ? AND role_id = ?",
             (guild_id, role_id),
         )
         row = await cur.fetchone()
-        if not row:
-            return None
 
-        is_open, note, until_ts, updated_by, updated_at = row
-        return {
-            "is_open": bool(is_open),
-            "note": note,
-            "until_ts": until_ts,
-            "updated_by": updated_by,
-            "updated_at": updated_at,
-        }
-
-
-async def get_effective_status(*, guild_id: int, role_id: int) -> dict:
-    row = await _get_status_row(guild_id=guild_id, role_id=role_id)
     if not row:
-        return {"is_open": True, "note": None, "until_ts": None, "source": "default"}
+        return {"is_open": True, "note": None, "updated_at": None, "updated_by": None, "is_default": True}
 
-    until_ts = row.get("until_ts")
-    if until_ts:
-        try:
-            if int(until_ts) <= int(_now().timestamp()):
-                await _clear_status(guild_id=guild_id, role_id=role_id)
-                return {"is_open": True, "note": None, "until_ts": None, "source": "default"}
-        except Exception:
-            pass
-
+    is_open_i, note, updated_at, updated_by = row
     return {
-        "is_open": bool(row.get("is_open")),
-        "note": row.get("note"),
-        "until_ts": row.get("until_ts"),
-        "source": "override",
+        "is_open": bool(is_open_i),
+        "note": note,
+        "updated_at": updated_at,
+        "updated_by": updated_by,
+        "is_default": False,
     }
 
 
-async def list_statuses(*, guild_id: int) -> list[tuple[int, dict]]:
-    return [(rid, await get_effective_status(guild_id=guild_id, role_id=rid)) for rid in SERVER_ROLES.keys()]
+def _server_choices() -> list[app_commands.Choice[str]]:
+    # choices values must be <= JS safe integer if numeric, so we use strings
+    return [app_commands.Choice(name=name, value=str(rid)) for rid, name in SERVER_ROLES.items()]
 
 
-def _abs_ts(unix_s: int) -> str:
-    try:
-        d = dt.datetime.fromtimestamp(int(unix_s), tz=dt.timezone.utc)
-        return f"<t:{int(d.timestamp())}:F>"
-    except Exception:
-        return str(unix_s)
-
-
-def _rel_ts(unix_s: int) -> str:
-    try:
-        d = dt.datetime.fromtimestamp(int(unix_s), tz=dt.timezone.utc)
-        return f"<t:{int(d.timestamp())}:R>"
-    except Exception:
-        return ""
-
-
-def _server_choices() -> list[app_commands.Choice[int]]:
-    return [app_commands.Choice(name=name[:100], value=int(rid)) for rid, name in SERVER_ROLES.items()]
+def _status_embed(title: str, desc: str, *, ok: bool) -> discord.Embed:
+    return discord.Embed(title=title, description=desc, color=(0x57F287 if ok else 0xED4245))
 
 
 class ServerStatusGroup(app_commands.Group):
     def __init__(self):
-        super().__init__(name="server_status", description="Staff-only: manage move destination availability.")
+        super().__init__(name="server_status", description="Staff: manage server availability for move requests.")
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+    @app_commands.command(name="set", description="Set a server as open/closed (with optional note).")
+    @app_commands.describe(server="Which server role this applies to.", open="Whether the server is open.", note="Optional note shown to staff/users.")
+    @app_commands.choices(server=_server_choices())
+    async def set_cmd(self, interaction: discord.Interaction, server: str, open: bool, note: str | None = None):
         if interaction.user.id not in ALLOWED_USER_IDS:
-            await interaction.response.send_message("You are not authorized to use this.", ephemeral=True)
-            return False
+            await interaction.response.send_message("Not authorized.", ephemeral=True)
+            return
         if interaction.guild is None:
             await interaction.response.send_message("Run this in a server.", ephemeral=True)
-            return False
-        return True
+            return
 
-    @app_commands.command(name="list", description="List open/closed status for all servers.")
-    async def list_cmd(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        assert guild is not None
-
-        rows = await list_statuses(guild_id=guild.id)
-
-        embed = discord.Embed(title="Server status")
-        lines = []
-        for role_id, st in rows:
-            name = SERVER_ROLES.get(role_id, str(role_id))
-            state = "✅ Open" if st["is_open"] else "⛔ Closed"
-            extra = []
-            if st.get("note"):
-                extra.append(st["note"])
-            if st.get("until_ts"):
-                extra.append(f"until {_abs_ts(int(st['until_ts']))} ({_rel_ts(int(st['until_ts']))})")
-            tail = f" — {' | '.join(extra)}" if extra else ""
-            src = "" if st.get("source") == "override" else " (default)"
-            lines.append(f"• **{name}**: {state}{src}{tail}")
-
-        embed.description = "\n".join(lines) if lines else "(none)"
-        await interaction.response.send_message(embed=embed, ephemeral=True, allowed_mentions=NO_PINGS)
-
-    @app_commands.command(name="set", description="Set a server to open/closed with an optional note and optional expiry.")
-    @app_commands.describe(
-        server="Which server (by its role mapping).",
-        open="True=open, False=closed.",
-        note="Optional note staff can see.",
-        until="Optional expiry (raw unix, <t:...:R>, or relative like 2h/1d).",
-    )
-    @app_commands.choices(server=_server_choices())
-    async def set_cmd(
-        self,
-        interaction: discord.Interaction,
-        server: app_commands.Choice[int],
-        open: bool,
-        note: str | None = None,
-        until: str | None = None,
-    ):
-        guild = interaction.guild
-        assert guild is not None
-
-        until_ts: Optional[int] = None
-        if until:
-            until_ts = _parse_until(until)
-            if until_ts is None:
-                await interaction.response.send_message(
-                    "Couldn’t parse `until`. Use raw unix seconds, `<t:UNIX:R>`, or a relative like `2h`, `30m`, `1d`.",
-                    ephemeral=True,
-                )
-                return
-
-        await _set_status(
-            guild_id=guild.id,
-            role_id=int(server.value),
-            is_open=bool(open),
-            note=note,
-            until_ts=until_ts,
+        role_id = int(server)
+        await set_status(
+            guild_id=interaction.guild.id,
+            role_id=role_id,
+            is_open=open,
+            note=(note.strip() if note else None),
             updated_by=interaction.user.id,
         )
 
-        name = SERVER_ROLES.get(int(server.value), str(server.value))
-        state = "OPEN" if open else "CLOSED"
-        extra = []
-        if note:
-            extra.append(f"Note: {note.strip()}")
-        if until_ts:
-            extra.append(f"Until: {_abs_ts(until_ts)} ({_rel_ts(until_ts)})")
+        name = SERVER_ROLES.get(role_id, str(role_id))
+        state = "OPEN ✅" if open else "CLOSED ⛔"
+        extra = f"\nNote: {note.strip()}" if note and note.strip() else ""
+        embed = _status_embed("Server status updated", f"**{name}** is now **{state}**.{extra}", ok=open)
+        await interaction.response.send_message(embed=embed, ephemeral=True, allowed_mentions=NO_PINGS)
 
-        msg = f"Set **{name}** to **{state}**." + (f"\n" + "\n".join(extra) if extra else "")
-        await interaction.response.send_message(msg, ephemeral=True, allowed_mentions=NO_PINGS)
-
-    @app_commands.command(name="clear", description="Clear override for a server (reverts to default open).")
-    @app_commands.describe(server="Which server (by its role mapping).")
+    @app_commands.command(name="clear", description="Clear override (reverts to default: open).")
+    @app_commands.describe(server="Which server role to clear override for.")
     @app_commands.choices(server=_server_choices())
-    async def clear_cmd(self, interaction: discord.Interaction, server: app_commands.Choice[int]):
-        guild = interaction.guild
-        assert guild is not None
+    async def clear_cmd(self, interaction: discord.Interaction, server: str):
+        if interaction.user.id not in ALLOWED_USER_IDS:
+            await interaction.response.send_message("Not authorized.", ephemeral=True)
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message("Run this in a server.", ephemeral=True)
+            return
 
-        ok = await _clear_status(guild_id=guild.id, role_id=int(server.value))
-        name = SERVER_ROLES.get(int(server.value), str(server.value))
-        if ok:
-            await interaction.response.send_message(f"Cleared override for **{name}** (default: open).", ephemeral=True)
-        else:
+        role_id = int(server)
+        cleared = await clear_status(guild_id=interaction.guild.id, role_id=role_id)
+
+        name = SERVER_ROLES.get(role_id, str(role_id))
+        if not cleared:
             await interaction.response.send_message(f"No override existed for **{name}**.", ephemeral=True)
+            return
+
+        embed = _status_embed("Override cleared", f"**{name}** is back to default (**OPEN**).", ok=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True, allowed_mentions=NO_PINGS)
+
+    @app_commands.command(name="list", description="Show current server status (default is open).")
+    async def list_cmd(self, interaction: discord.Interaction):
+        if interaction.user.id not in ALLOWED_USER_IDS:
+            await interaction.response.send_message("Not authorized.", ephemeral=True)
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message("Run this in a server.", ephemeral=True)
+            return
+
+        lines: list[str] = []
+        for rid, name in SERVER_ROLES.items():
+            st = await get_effective_status(guild_id=interaction.guild.id, role_id=rid)
+            if st["is_default"]:
+                lines.append(f"**{name}** — OPEN ✅ (default)")
+            else:
+                state = "OPEN ✅" if st["is_open"] else "CLOSED ⛔"
+                note = f" — {st['note']}" if st.get("note") else ""
+                lines.append(f"**{name}** — {state}{note}")
+
+        embed = discord.Embed(title="Server Status", description="\n".join(lines) if lines else "No servers configured.", color=0xA9C9FF)
+        await interaction.response.send_message(embed=embed, ephemeral=True, allowed_mentions=NO_PINGS)
 
 
 def setup(bot):
