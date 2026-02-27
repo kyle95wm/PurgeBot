@@ -9,8 +9,7 @@ from ..config import ALLOWED_USER_IDS
 from ..helpers import NO_PINGS
 from ..db import connect
 
-# Reuse the same single source of truth
-from .move_server import SERVER_ROLES
+from .server_roles import SERVER_ROLES
 
 
 def _now() -> dt.datetime:
@@ -31,19 +30,16 @@ def _parse_until(s: str) -> Optional[int]:
     """
     s = s.strip()
 
-    # raw unix seconds
     if re.fullmatch(r"\d{9,12}", s):
         try:
             return int(s)
         except Exception:
             return None
 
-    # Discord-style: <t:UNIX:...>
     m = re.match(r"^<t:(\d+)(?::[tTdDfFR])?>$", s)
     if m:
         return int(m.group(1))
 
-    # Relative: number + unit
     m = re.match(r"^(\d+)\s*([smhdw])$", s, re.IGNORECASE)
     if m:
         n = int(m.group(1))
@@ -119,13 +115,6 @@ async def _get_status_row(*, guild_id: int, role_id: int) -> Optional[dict]:
 
 
 async def get_effective_status(*, guild_id: int, role_id: int) -> dict:
-    """
-    Effective status:
-      - default is open
-      - if row exists and until_ts is in the past -> auto-clear + default open
-      - otherwise use row
-    Returns dict: {is_open: bool, note: str|None, until_ts: int|None, source: "default"|"override"}
-    """
     row = await _get_status_row(guild_id=guild_id, role_id=role_id)
     if not row:
         return {"is_open": True, "note": None, "until_ts": None, "source": "default"}
@@ -134,7 +123,6 @@ async def get_effective_status(*, guild_id: int, role_id: int) -> dict:
     if until_ts:
         try:
             if int(until_ts) <= int(_now().timestamp()):
-                # expired -> clear
                 await _clear_status(guild_id=guild_id, role_id=role_id)
                 return {"is_open": True, "note": None, "until_ts": None, "source": "default"}
         except Exception:
@@ -149,10 +137,7 @@ async def get_effective_status(*, guild_id: int, role_id: int) -> dict:
 
 
 async def list_statuses(*, guild_id: int) -> list[tuple[int, dict]]:
-    out: list[tuple[int, dict]] = []
-    for rid in SERVER_ROLES.keys():
-        out.append((rid, await get_effective_status(guild_id=guild_id, role_id=rid)))
-    return out
+    return [(rid, await get_effective_status(guild_id=guild_id, role_id=rid)) for rid in SERVER_ROLES.keys()]
 
 
 def _abs_ts(unix_s: int) -> str:
@@ -172,12 +157,7 @@ def _rel_ts(unix_s: int) -> str:
 
 
 def _server_choices() -> list[app_commands.Choice[int]]:
-    # Build choices from SERVER_ROLES (future-proof: add one line to dict, restart bot)
-    choices: list[app_commands.Choice[int]] = []
-    for rid, name in SERVER_ROLES.items():
-        # Discord choice name limit is 100 chars
-        choices.append(app_commands.Choice(name=name[:100], value=int(rid)))
-    return choices
+    return [app_commands.Choice(name=name[:100], value=int(rid)) for rid, name in SERVER_ROLES.items()]
 
 
 class ServerStatusGroup(app_commands.Group):
@@ -221,7 +201,7 @@ class ServerStatusGroup(app_commands.Group):
     @app_commands.describe(
         server="Which server (by its role mapping).",
         open="True=open, False=closed.",
-        note="Optional note staff can see (and users may see if you choose to show it later).",
+        note="Optional note staff can see.",
         until="Optional expiry (raw unix, <t:...:R>, or relative like 2h/1d).",
     )
     @app_commands.choices(server=_server_choices())

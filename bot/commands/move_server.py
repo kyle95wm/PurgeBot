@@ -6,21 +6,10 @@ from discord import app_commands
 
 from ..config import ALLOWED_USER_IDS
 from ..helpers import NO_PINGS, send_audit_embed
-from ..db import connect
 
-# server_status helper (effective open/closed)
+from .server_roles import SERVER_ROLES
 from . import server_status
 
-
-# ============================================================
-# CONFIG (single source of truth)
-# Add future servers by adding ONE line here.
-# ============================================================
-SERVER_ROLES: dict[int, str] = {
-    1466939252024541423: "SS East",
-    1466938881764233396: "SS West",
-    1472852339730681998: "SS South",
-}
 
 MOVE_REQUESTS_CHANNEL_ID = 1468797510897373425
 MOVE_SERVER_COOLDOWN_SECONDS = 60 * 60  # 1 hour
@@ -158,12 +147,6 @@ async def _safe_defer(interaction: discord.Interaction, *, ephemeral: bool = Tru
         return False
 
 
-# ============================================================
-# USER FLOW:
-# 1) /move_server -> ephemeral dropdown to choose destination
-# 2) "Continue" -> modal for email/reason
-# ============================================================
-
 class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
     email = discord.ui.TextInput(label="Email address", required=True)
     reason = discord.ui.TextInput(
@@ -215,7 +198,6 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
             )
             return
 
-        # Validate destination is still allowed AND open
         raw_dest_ids = _allowed_destinations(current)
         open_dest_ids = await _filter_open_destinations(guild.id, raw_dest_ids)
         if self.to_role_id not in open_dest_ids:
@@ -294,7 +276,6 @@ class DestinationSelect(discord.ui.Select):
         chosen = int(self.values[0])
         view.selected_to_role_id = chosen
 
-        # Option B:
         self.disabled = True
         view.continue_button.disabled = False
 
@@ -307,7 +288,7 @@ class DestinationSelect(discord.ui.Select):
 
 class MoveServerDestinationView(discord.ui.View):
     def __init__(self, *, author_id: int, source_channel_id: int, from_role_id: int, destination_role_ids: list[int]):
-        super().__init__(timeout=180)  # ephemeral, non-persistent
+        super().__init__(timeout=180)
         self.author_id = author_id
         self.source_channel_id = source_channel_id
         self.from_role_id = from_role_id
@@ -346,21 +327,13 @@ class MoveServerDestinationView(discord.ui.View):
         )
 
 
-# ============================================================
-# STAFF FLOW (persistent buttons)
-# ============================================================
-
 class AcceptMoveModal(discord.ui.Modal, title="Accept move request"):
-    plex_invite_url = discord.ui.TextInput(
-        label="Plex invite URL",
-        required=True,
-        max_length=500,
-    )
+    plex_invite_url = discord.ui.TextInput(label="Plex invite URL", required=True, max_length=500)
 
     def __init__(self, *, requester_id: int, source_channel_id: int, request_id: str, from_role_id: int, to_role_id: int):
         super().__init__()
         self.requester_id = requester_id
-        self.source_channel_id = source_channel_id  # kept for metadata; fallback ping channel is fixed
+        self.source_channel_id = source_channel_id
         self.request_id = request_id
         self.from_role_id = from_role_id
         self.to_role_id = to_role_id
@@ -437,7 +410,7 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
     def __init__(self, *, requester_id: int, source_channel_id: int, request_id: str, from_role_id: int, to_role_id: int):
         super().__init__()
         self.requester_id = requester_id
-        self.source_channel_id = source_channel_id  # kept for metadata; fallback ping channel is fixed
+        self.source_channel_id = source_channel_id
         self.request_id = request_id
         self.from_role_id = from_role_id
         self.to_role_id = to_role_id
@@ -503,19 +476,10 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
 
 
 class MoveServerActionView(discord.ui.View):
-    """
-    Persistent view (registered in on_ready). Requirements:
-      - timeout=None
-      - every item has custom_id
-    """
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(
-        label="Accept",
-        style=discord.ButtonStyle.success,
-        custom_id="move_server:accept",
-    )
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="move_server:accept")
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in ALLOWED_USER_IDS:
             await interaction.response.send_message("Not authorized.", ephemeral=True)
@@ -542,11 +506,7 @@ class MoveServerActionView(discord.ui.View):
             )
         )
 
-    @discord.ui.button(
-        label="Deny",
-        style=discord.ButtonStyle.danger,
-        custom_id="move_server:deny",
-    )
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, custom_id="move_server:deny")
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in ALLOWED_USER_IDS:
             await interaction.response.send_message("Not authorized.", ephemeral=True)
@@ -573,10 +533,6 @@ class MoveServerActionView(discord.ui.View):
             )
         )
 
-
-# ============================================================
-# SLASH COMMAND
-# ============================================================
 
 def setup(bot):
     @bot.tree.command(name="move_server", description="Request server move (East/West/South)")
