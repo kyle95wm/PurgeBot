@@ -17,7 +17,7 @@ from .commands import move_panel
 from .commands import discord_info
 # NEW
 from .commands import afk
-
+from .commands import server_status
 
 intents = discord.Intents.default()
 intents.members = True
@@ -127,10 +127,10 @@ def load_commands():
     discord_info.setup(bot)
     move_server.setup(bot)
     move_panel.setup(bot)
-
+ 
     # NEW
     afk.setup(bot)
-
+    server_status.setup(bot)
 
 load_commands()
 bot.run(TOKEN)

@@ -6,6 +6,10 @@ from discord import app_commands
 
 from ..config import ALLOWED_USER_IDS
 from ..helpers import NO_PINGS, send_audit_embed
+from ..db import connect
+
+# server_status helper (effective open/closed)
+from . import server_status
 
 
 # ============================================================
@@ -69,6 +73,18 @@ def _get_current_server_role(member: discord.Member) -> int | None:
 def _allowed_destinations(current_role_id: int) -> list[int]:
     """All server role IDs except the current one."""
     return [rid for rid in SERVER_ROLES.keys() if rid != current_role_id]
+
+
+async def _filter_open_destinations(guild_id: int, destination_role_ids: list[int]) -> list[int]:
+    """
+    Only return destinations that are effectively open (default open; staff can close in DB).
+    """
+    out: list[int] = []
+    for rid in destination_role_ids:
+        st = await server_status.get_effective_status(guild_id=guild_id, role_id=rid)
+        if st.get("is_open"):
+            out.append(rid)
+    return out
 
 
 async def _fetch_requests_channel(guild: discord.Guild) -> discord.TextChannel | None:
@@ -137,7 +153,6 @@ async def _safe_defer(interaction: discord.Interaction, *, ephemeral: bool = Tru
             await interaction.response.defer(ephemeral=ephemeral)
         return True
     except discord.NotFound:
-        # 404 Unknown interaction (took too long / stale modal submission)
         return False
     except discord.HTTPException:
         return False
@@ -200,9 +215,12 @@ class MoveServerRequestModal(discord.ui.Modal, title="Move server request"):
             )
             return
 
-        if self.to_role_id not in _allowed_destinations(current):
+        # Validate destination is still allowed AND open
+        raw_dest_ids = _allowed_destinations(current)
+        open_dest_ids = await _filter_open_destinations(guild.id, raw_dest_ids)
+        if self.to_role_id not in open_dest_ids:
             await interaction.followup.send(
-                "That destination is not valid for your current server role. Please run `/move_server` again.",
+                "That destination is currently unavailable. Please run `/move_server` again.",
                 ephemeral=True,
             )
             return
@@ -277,8 +295,6 @@ class DestinationSelect(discord.ui.Select):
         view.selected_to_role_id = chosen
 
         # Option B:
-        # - disable dropdown after pick
-        # - enable Continue
         self.disabled = True
         view.continue_button.disabled = False
 
@@ -376,7 +392,6 @@ class AcceptMoveModal(discord.ui.Modal, title="Accept move request"):
             except Exception:
                 dm_ok = False
 
-        # Fallback ping in fixed channel if DM fails
         if not dm_ok:
             fb = await _fetch_fallback_ping_channel(guild)
             if fb:
@@ -452,7 +467,6 @@ class DenyMoveModal(discord.ui.Modal, title="Deny move request"):
             except Exception:
                 dm_ok = False
 
-        # Fallback ping in fixed channel if DM fails (no reason posted)
         if not dm_ok:
             fb = await _fetch_fallback_ping_channel(guild)
             if fb:
@@ -587,9 +601,13 @@ def setup(bot):
             )
             return
 
-        dest_ids = _allowed_destinations(current_role_id)
+        raw_dest_ids = _allowed_destinations(current_role_id)
+        dest_ids = await _filter_open_destinations(guild.id, raw_dest_ids)
         if not dest_ids:
-            await interaction.response.send_message("No destinations available.", ephemeral=True)
+            await interaction.response.send_message(
+                "No destinations are currently available. Please try again later.",
+                ephemeral=True,
+            )
             return
 
         source_channel_id = interaction.channel.id if interaction.channel else 0

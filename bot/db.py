@@ -30,7 +30,25 @@ CREATE TABLE IF NOT EXISTS invite_join_log (
 
 CREATE INDEX IF NOT EXISTS idx_invite_join_log_guild_time
   ON invite_join_log (guild_id, joined_at);
+
+-- Staff-managed server availability for move_server
+-- is_open: 1=open, 0=closed
+-- until_ts: optional unix seconds; if set and in the past, treated as open and row is auto-cleared
+CREATE TABLE IF NOT EXISTS server_status (
+  guild_id INTEGER NOT NULL,
+  role_id INTEGER NOT NULL,
+  is_open INTEGER NOT NULL,
+  note TEXT,
+  until_ts INTEGER,
+  updated_by INTEGER,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (guild_id, role_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_server_status_guild
+  ON server_status (guild_id);
 """
+
 
 def connect():
     """
