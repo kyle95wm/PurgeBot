@@ -1,9 +1,17 @@
+import asyncio
 import datetime as dt
 
 import discord
 from discord.ext import commands
 
-from .config import TOKEN, ALLOWED_USER_IDS, VISITOR_ROLE_ID
+from .config import (
+    TOKEN,
+    ALLOWED_USER_IDS,
+    VISITOR_ROLE_ID,
+    ACTIVE_SUBSCRIBER_ROLE_ID,
+    EXPIRED_ROLE_ID,
+    SUBSCRIBER_ROLE_SYNC_DELAY_SECONDS,
+)
 from .views import CheckStatusPanelView
 from .helpers import send_audit_embed
 from .db import ensure_db
@@ -15,7 +23,6 @@ from .commands import invite as invite_cmd
 from .commands import move_server
 from .commands import move_panel
 from .commands import discord_info
-# NEW
 from .commands import afk
 from .commands import server_status
 from .commands import silent_ping
@@ -57,6 +64,61 @@ def _ts_rel(d: dt.datetime | None) -> str:
     if d is None:
         return "unknown"
     return f"<t:{int(d.timestamp())}:R>"
+
+
+async def _sync_subscriber_roles(member: discord.Member, *, active_should_exist: bool) -> None:
+    """
+    After a short delay, enforce:
+      - if Active Subscriber exists -> remove Expired
+      - if Active Subscriber does not exist -> add Expired
+    Re-checks member roles after the delay before changing anything.
+    """
+    if member.bot:
+        return
+
+    if not ACTIVE_SUBSCRIBER_ROLE_ID or not EXPIRED_ROLE_ID:
+        return
+
+    await asyncio.sleep(SUBSCRIBER_ROLE_SYNC_DELAY_SECONDS)
+
+    guild = member.guild
+    refreshed = guild.get_member(member.id)
+    if refreshed is None:
+        try:
+            refreshed = await guild.fetch_member(member.id)
+        except Exception:
+            return
+
+    active_role = guild.get_role(ACTIVE_SUBSCRIBER_ROLE_ID)
+    expired_role = guild.get_role(EXPIRED_ROLE_ID)
+
+    if active_role is None or expired_role is None:
+        print(
+            f"[subscriber-role-sync] Missing role(s) in guild {guild.id}: "
+            f"active={ACTIVE_SUBSCRIBER_ROLE_ID} expired={EXPIRED_ROLE_ID}"
+        )
+        return
+
+    role_ids = {r.id for r in refreshed.roles}
+    has_active = ACTIVE_SUBSCRIBER_ROLE_ID in role_ids
+    has_expired = EXPIRED_ROLE_ID in role_ids
+
+    try:
+        if active_should_exist:
+            # User gained Active Subscriber; if they still have it, remove Expired.
+            if has_active and has_expired:
+                await refreshed.remove_roles(expired_role, reason="Active Subscriber gained; removing Expired")
+        else:
+            # User lost Active Subscriber; if they still don't have it, add Expired.
+            if not has_active and not has_expired:
+                await refreshed.add_roles(expired_role, reason="Active Subscriber lost; adding Expired")
+    except discord.Forbidden:
+        print(
+            f"[subscriber-role-sync] Missing permissions / hierarchy issue in guild {guild.id} "
+            f"for member {refreshed.id}"
+        )
+    except Exception as e:
+        print(f"[subscriber-role-sync] Failed in guild {guild.id} for member {refreshed.id}: {type(e).__name__}: {e}")
 
 
 @bot.event
@@ -185,6 +247,31 @@ async def on_member_join(member: discord.Member):
         await send_audit_embed(guild, warning)
 
 
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    if before.bot or after.bot:
+        return
+
+    if not ACTIVE_SUBSCRIBER_ROLE_ID or not EXPIRED_ROLE_ID:
+        return
+
+    before_role_ids = {r.id for r in before.roles}
+    after_role_ids = {r.id for r in after.roles}
+
+    had_active = ACTIVE_SUBSCRIBER_ROLE_ID in before_role_ids
+    has_active = ACTIVE_SUBSCRIBER_ROLE_ID in after_role_ids
+
+    # Active Subscriber was added
+    if not had_active and has_active:
+        asyncio.create_task(_sync_subscriber_roles(after, active_should_exist=True))
+        return
+
+    # Active Subscriber was removed
+    if had_active and not has_active:
+        asyncio.create_task(_sync_subscriber_roles(after, active_should_exist=False))
+        return
+
+
 def load_commands():
     checkme.setup(bot)
     check.setup(bot)
@@ -201,10 +288,10 @@ def load_commands():
     move_server.setup(bot)
     move_panel.setup(bot)
 
-    # NEW
     afk.setup(bot)
     server_status.setup(bot)
     silent_ping.setup(bot)
+
 
 load_commands()
 bot.run(TOKEN)
