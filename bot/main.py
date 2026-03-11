@@ -11,6 +11,7 @@ from .config import (
     ACTIVE_SUBSCRIBER_ROLE_ID,
     EXPIRED_ROLE_ID,
     SUBSCRIBER_ROLE_SYNC_DELAY_SECONDS,
+    AUDIT_LOG_CHANNEL_ID,
 )
 from .views import CheckStatusPanelView
 from .helpers import send_audit_embed
@@ -38,6 +39,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 bot.version = "modular-v1"
 
 NEW_ACCOUNT_WARNING_DAYS = 90
+NEW_ACCOUNT_WARNING_ROLE_ID = 1457561998530318478
 
 
 def _utc_now() -> dt.datetime:
@@ -64,6 +66,39 @@ def _ts_rel(d: dt.datetime | None) -> str:
     if d is None:
         return "unknown"
     return f"<t:{int(d.timestamp())}:R>"
+
+
+async def _send_new_account_warning_ping(guild: discord.Guild, embed: discord.Embed) -> None:
+    """
+    Send the new-account warning with a role ping above the embed, if the audit channel exists.
+    Falls back to the normal audit helper if we can't send directly.
+    """
+    if not AUDIT_LOG_CHANNEL_ID:
+        await send_audit_embed(guild, embed)
+        return
+
+    channel = guild.get_channel(AUDIT_LOG_CHANNEL_ID)
+    if channel is None:
+        try:
+            fetched = await guild.fetch_channel(AUDIT_LOG_CHANNEL_ID)
+            channel = fetched
+        except Exception:
+            channel = None
+
+    if isinstance(channel, discord.TextChannel):
+        try:
+            await channel.send(
+                content=f"<@&{NEW_ACCOUNT_WARNING_ROLE_ID}>",
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(roles=True),
+            )
+            return
+        except discord.Forbidden:
+            pass
+        except discord.HTTPException:
+            pass
+
+    await send_audit_embed(guild, embed)
 
 
 async def _sync_subscriber_roles(member: discord.Member, *, active_should_exist: bool) -> None:
@@ -241,7 +276,7 @@ async def on_member_join(member: discord.Member):
             value=f"{NEW_ACCOUNT_WARNING_DAYS} days or less",
             inline=False,
         )
-        await send_audit_embed(guild, warning)
+        await _send_new_account_warning_ping(guild, warning)
 
 
 @bot.event
