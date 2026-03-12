@@ -106,6 +106,20 @@ async def _maybe_suppress_plex_preview(message: discord.Message) -> None:
         print(f"[plex-preview] Failed to suppress embed in guild {message.guild.id}: {type(e).__name__}: {e}")
 
 
+async def _maybe_delete_pin_system_message(message: discord.Message) -> None:
+    if message.guild is None:
+        return
+    if message.type != discord.MessageType.pins_add:
+        return
+
+    try:
+        await message.delete()
+    except discord.Forbidden:
+        print(f"[pins] Missing permissions to delete pin system message in guild {message.guild.id}")
+    except discord.HTTPException as e:
+        print(f"[pins] Failed to delete pin system message in guild {message.guild.id}: {type(e).__name__}: {e}")
+
+
 async def _send_new_account_warning_ping(guild: discord.Guild, embed: discord.Embed) -> None:
     """
     Send the new-account warning with a role ping above the embed, if the audit channel exists.
@@ -342,6 +356,10 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
 @bot.event
 async def on_message(message: discord.Message):
+    if message.type == discord.MessageType.pins_add:
+        await _maybe_delete_pin_system_message(message)
+        return
+
     asyncio.create_task(_maybe_suppress_plex_preview(message))
 
 
