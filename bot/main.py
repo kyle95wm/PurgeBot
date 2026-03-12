@@ -1,5 +1,6 @@
 import asyncio
 import datetime as dt
+import re
 
 import discord
 from discord.ext import commands
@@ -30,9 +31,7 @@ from .commands import silent_ping
 
 intents = discord.Intents.default()
 intents.members = True
-# NOTE: message content intent is not strictly required for AFK detection via mentions/replies,
-# but enabling it improves reliability if you ever want to inspect message text.
-# intents.message_content = True
+intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -40,6 +39,11 @@ bot.version = "modular-v1"
 
 NEW_ACCOUNT_WARNING_DAYS = 90
 NEW_ACCOUNT_WARNING_ROLE_ID = 1457561998530318478
+
+PLEX_LINK_RE = re.compile(
+    r"(?<!<)https?://(?:www\.)?plex\.tv/\S+(?!>)",
+    re.IGNORECASE,
+)
 
 
 def _utc_now() -> dt.datetime:
@@ -66,6 +70,40 @@ def _ts_rel(d: dt.datetime | None) -> str:
     if d is None:
         return "unknown"
     return f"<t:{int(d.timestamp())}:R>"
+
+
+def _has_unsuppressed_plex_link(content: str) -> bool:
+    return bool(PLEX_LINK_RE.search(content or ""))
+
+
+async def _maybe_suppress_plex_preview(message: discord.Message) -> None:
+    if message.guild is None:
+        return
+    if message.author.bot:
+        return
+    if not _has_unsuppressed_plex_link(message.content):
+        return
+    if message.flags.suppress_embeds:
+        return
+
+    await asyncio.sleep(2)
+
+    try:
+        refreshed = await message.channel.fetch_message(message.id)
+    except Exception:
+        return
+
+    if refreshed.flags.suppress_embeds:
+        return
+    if not _has_unsuppressed_plex_link(refreshed.content):
+        return
+
+    try:
+        await refreshed.edit(suppress=True)
+    except discord.Forbidden:
+        print(f"[plex-preview] Missing permissions to suppress embeds in guild {message.guild.id}")
+    except discord.HTTPException as e:
+        print(f"[plex-preview] Failed to suppress embed in guild {message.guild.id}: {type(e).__name__}: {e}")
 
 
 async def _send_new_account_warning_ping(guild: discord.Guild, embed: discord.Embed) -> None:
@@ -140,11 +178,9 @@ async def _sync_subscriber_roles(member: discord.Member, *, active_should_exist:
 
     try:
         if active_should_exist:
-            # User gained Active Subscriber; if they still have it, remove Expired.
             if has_active and has_expired:
                 await refreshed.remove_roles(expired_role, reason="Active Subscriber gained; removing Expired")
         else:
-            # User lost Active Subscriber; if they still don't have it, add Expired.
             if not has_active and not has_expired:
                 await refreshed.add_roles(expired_role, reason="Active Subscriber lost; adding Expired")
     except discord.Forbidden:
@@ -302,6 +338,11 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     if had_active and not has_active:
         asyncio.create_task(_sync_subscriber_roles(after, active_should_exist=False))
         return
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    asyncio.create_task(_maybe_suppress_plex_preview(message))
 
 
 def load_commands():
