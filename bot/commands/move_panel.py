@@ -52,7 +52,8 @@ async def _start_move_flow(interaction: discord.Interaction) -> None:
         )
         return
 
-    dest_ids = move_server._allowed_destinations(current_role_id)  # type: ignore
+    raw_dest_ids = move_server._allowed_destinations(current_role_id)  # type: ignore
+    dest_ids = await move_server._filter_open_destinations(guild.id, raw_dest_ids)  # type: ignore
     if not dest_ids:
         await interaction.response.send_message("No destinations available.", ephemeral=True)
         return
@@ -82,17 +83,18 @@ class MovePanelView(discord.ui.View):
       - timeout=None
       - custom_id on non-link buttons
     """
-    def __init__(self, *, guild_id: int):
+    def __init__(self, guild_id: int | None = None):
         super().__init__(timeout=None)
 
-        maintenance_url = f"https://discord.com/channels/{guild_id}/{MAINTENANCE_WINDOWS_CHANNEL_ID}"
-        self.add_item(
-            discord.ui.Button(
-                label="View Maintenance Windows",
-                style=discord.ButtonStyle.link,
-                url=maintenance_url,
+        if guild_id is not None:
+            maintenance_url = f"https://discord.com/channels/{guild_id}/{MAINTENANCE_WINDOWS_CHANNEL_ID}"
+            self.add_item(
+                discord.ui.Button(
+                    label="View Maintenance Windows",
+                    style=discord.ButtonStyle.link,
+                    url=maintenance_url,
+                )
             )
-        )
 
     @discord.ui.button(
         label="Request a server move",
@@ -129,7 +131,7 @@ def setup(bot):
         try:
             msg = await target.send(
                 embed=embed,
-                view=MovePanelView(guild_id=guild.id),
+                view=MovePanelView(guild.id),
                 allowed_mentions=NO_PINGS,
             )
         except discord.Forbidden:
