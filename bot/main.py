@@ -307,6 +307,7 @@ async def on_member_join(member: discord.Member):
     embed = discord.Embed(
         title="Member joined",
         description=f"{member} ({member.id}) joined.",
+        color=discord.Color.green(),
     )
 
     embed.add_field(
@@ -364,6 +365,7 @@ async def on_member_remove(member: discord.Member):
     embed = discord.Embed(
         title="Member left",
         description=f"{member} ({member.id}) left.",
+        color=discord.Color.red(),
     )
 
     embed.add_field(
