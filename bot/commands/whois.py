@@ -41,7 +41,7 @@ def _parse_iso_dt(s: str | None) -> dt.datetime | None:
 
 async def _get_invite_join_info(*, guild_id: int, member_id: int) -> dict | None:
     async with connect() as db:
-        row = await db.execute_fetchone(
+        cur = await db.execute(
             """
             SELECT invite_code, inviter_id, uses_before, uses_after, joined_at
             FROM invite_join_log
@@ -51,6 +51,7 @@ async def _get_invite_join_info(*, guild_id: int, member_id: int) -> dict | None
             """,
             (guild_id, member_id),
         )
+        row = await cur.fetchone()
 
     if not row:
         return None
@@ -83,11 +84,13 @@ def setup(bot):
 
         # Roles (exclude @everyone)
         roles = [r for r in user.roles if r != guild.default_role]
+        # Show highest -> lowest
         roles_sorted = sorted(roles, key=lambda r: r.position, reverse=True)
+
         roles_text = " ".join(r.mention for r in roles_sorted) if roles_sorted else "(none)"
 
         joined_at = user.joined_at
-        created_at = user.created_at
+        created_at = user.created_at  # always present for discord.Member
 
         invite_info = None
         try:
@@ -140,9 +143,9 @@ def setup(bot):
             invite_value = "No invite tracking record found."
 
         embed.add_field(name="Invite tracking", value=invite_value[:1024], inline=False)
-
         embed.add_field(name=f"Roles ({len(roles_sorted)})", value=roles_text[:1024], inline=False)
 
+        # Nice-to-have: show highest role
         if roles_sorted:
             embed.set_footer(text=f"Top role: {roles_sorted[0].name}")
 
