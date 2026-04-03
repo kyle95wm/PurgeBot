@@ -77,6 +77,7 @@ def setup(bot):
                 "- Self-check: `/checkme` + persistent `/check_panel`\n"
                 "- Invite tool: `/invite` (creates a 24h invite)\n"
                 "- Credentials helper: `/give_creds` (posts + DMs)\n"
+                "- Announcement tool: `/announce` (modal + preview + post)\n"
                 "- Move requests: `/move_server` (modal + staff approve/deny)\n"
                 "- Join auto-role: assigns **Member** on join\n"
                 "- Invite tracking logs joins to sqlite (best-effort)"
@@ -136,6 +137,7 @@ def setup(bot):
                 "- `/check_panel`\n"
                 "- `/bot_info`\n"
                 "- `/give_creds`\n\n"
+                "- `/announce`\n\n"
                 f"Allowed user IDs:\n{allowed_preview}"
             ),
             inline=False,
