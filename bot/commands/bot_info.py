@@ -73,14 +73,13 @@ def setup(bot):
         embed.add_field(
             name="Highlights",
             value=(
-                "- Purge system w/ preview + confirm code + grace cancel\n"
-                "- Self-check: `/checkme` + persistent `/check_panel`\n"
-                "- Invite tool: `/invite` (creates a 24h invite)\n"
-                "- Credentials helper: `/give_creds` (posts + DMs)\n"
-                "- Announcement tool: `/announce` (modal + preview + post)\n"
-                "- Move requests: `/move_server` (modal + staff approve/deny)\n"
-                "- Join auto-role: assigns **Member** on join\n"
-                "- Invite tracking logs joins to sqlite (best-effort)"
+                "- Purge flow with dry-run preview, confirm code, DM option, and grace cancel\n"
+                "- AFK system with optional ETA, auto-clear on return, and mention/reply notices\n"
+                "- Announcement flow with modal, ephemeral preview, optional role pings, and embed mode\n"
+                "- Move-server requests with destination picker, modal submit, and staff approve/deny\n"
+                "- Invite tracking stored in sqlite and exposed in `/whois`\n"
+                "- Auto-assigns **Member** on join and syncs Active Subscriber/Expired roles\n"
+                "- Suppresses Plex link previews and deletes pin system messages"
             ),
             inline=False,
         )
@@ -93,17 +92,19 @@ def setup(bot):
                 f"- Grace: **{GRACE_PERIOD_SECONDS}s**\n"
                 f"- Confirm TTL: **{CONFIRM_CODE_TTL_SECONDS//60} min**\n"
                 f"- Kick delay: **{KICK_DELAY_SECONDS:.1f}s**\n"
-                f"- Purge DM: **{purge_dm_status}**"
+                f"- Purge DM: **{purge_dm_status}**\n"
+                "- Role modes: **both**, **redditor_only**, **member_only**, **expired_only**"
             ),
             inline=False,
         )
 
         embed.add_field(
-            name="Role logic (purge target group)",
+            name="Role logic",
             value=(
-                "- Requires **Member** role\n"
-                "- **Redditor** is optional (depending on role_mode)\n"
-                "- Must have **no other roles** besides Member/Redditor (+ @everyone)"
+                "- Standard purge targets require **Member** and no extra roles beyond Member/Redditor\n"
+                "- `expired_only` targets members with **Expired** unless they also have the exemption role\n"
+                "- `/move_server` uses the configured server roles (**Omega**, **Alpha**, **Delta**)\n"
+                "- `/server_status` can open/close move destinations with an optional staff note"
             ),
             inline=False,
         )
@@ -128,28 +129,54 @@ def setup(bot):
 
         allowed_preview = "\n".join(f"- `{x}`" for x in sorted(ALLOWED_USER_IDS)) or "(none configured)"
         embed.add_field(
-            name="Access control",
+            name="Staff tools",
             value=(
-                "Staff-only commands:\n"
-                "- `/purge_eligible`\n"
-                "- `/list_only_allowed_roles`\n"
-                "- `/check`\n"
-                "- `/check_panel`\n"
-                "- `/bot_info`\n"
-                "- `/give_creds`\n\n"
-                "- `/announce`\n\n"
-                f"Allowed user IDs:\n{allowed_preview}"
+                "Slash commands:\n"
+                "- `/announce`, `/bot_info`, `/check`, `/check_panel`\n"
+                "- `/give_creds`, `/extend_creds`, `/test_purge_dm`\n"
+                "- `/list_only_allowed_roles`, `/purge_eligible`, `/remove_all_pending`\n"
+                "- `/move_panel`, `/silent_ping`, `/whois`, `/afk_clear`\n"
+                "- `/server_status set`, `/server_status clear`, `/server_status list`\n\n"
+                "Limited staff path:\n"
+                "- `/invite user:<member>` allows invite creation on behalf of someone else\n\n"
+                "Allowed user IDs:\n"
+                f"{allowed_preview}"
             ),
             inline=False,
         )
 
         embed.add_field(
-            name="User tools",
+            name="General tools",
             value=(
-                "- `/checkme` (cooldown enforced)\n"
-                "- Panel button: **Check my status**\n"
-                "- `/invite` *(permission-gated by channel perms)*\n"
-                "- `/move_server` *(requires East/West role)*"
+                "- `/afk` to set AFK with optional ETA/note\n"
+                "- `/checkme` to self-check purge risk\n"
+                "- `/discord_info` to generate Discord signup details\n"
+                "- `/invite` to create or reuse your own 24h landing-channel invite\n"
+                "- `/move_server` to request a move between open destinations\n"
+                "- `/serverinfo` for server stats (ephemeral by default)\n"
+                "- Context menu: **Whois** for staff"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Panels and logging",
+            value=(
+                "- `/check_panel` posts the persistent purge self-check panel\n"
+                "- `/move_panel` posts the persistent move-request panel\n"
+                "- Join/leave events and staff actions log to the audit channel when configured\n"
+                "- `/whois` includes stored invite-tracking details when available"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Access control",
+            value=(
+                "- `/purge_eligible`\n"
+                "- Staff-only slash commands are gated by `ALLOWED_USER_IDS`\n"
+                "- Some actions also require Discord perms, like Kick Members or Manage Roles\n"
+                "- User-facing commands still depend on server/channel context and bot permissions"
             ),
             inline=False,
         )
